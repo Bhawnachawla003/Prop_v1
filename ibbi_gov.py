@@ -8,7 +8,7 @@ import asyncio
 from tenacity import retry, stop_after_attempt, wait_exponential
 from bs4 import BeautifulSoup
 import sys
-#import colorlog
+import colorlog
 from pathlib import Path
 from datetime import datetime
 

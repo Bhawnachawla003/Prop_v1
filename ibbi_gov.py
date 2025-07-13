@@ -1,4 +1,5 @@
 import logging
+import logging.handlers
 import re
 import time
 import shutil
@@ -8,7 +9,6 @@ import asyncio
 from tenacity import retry, stop_after_attempt, wait_exponential
 from bs4 import BeautifulSoup
 import sys
-import colorlog
 from pathlib import Path
 from datetime import datetime
 
@@ -34,18 +34,11 @@ file_formatter = logging.Formatter(
 file_handler.setFormatter(file_formatter)
 logger.addHandler(file_handler)
 
-stream_handler = colorlog.StreamHandler(sys.stdout)
+# Add plain console logging (optional, remove if not needed)
+stream_handler = logging.StreamHandler(sys.stdout)
 stream_handler.setLevel(logging.DEBUG)
-stream_formatter = colorlog.ColoredFormatter(
-    '%(log_color)s%(asctime)s - %(levelname)s - %(process)d - %(filename)s:%(lineno)d - %(message)s',
-    datefmt='%H:%M:%S',
-    log_colors={
-        'DEBUG': 'cyan',
-        'INFO': 'green',
-        'WARNING': 'yellow',
-        'ERROR': 'red',
-        'CRITICAL': 'red,bg_white',
-    }
+stream_formatter = logging.Formatter(
+    '%(asctime)s - %(levelname)s - %(message)s'
 )
 stream_handler.setFormatter(stream_formatter)
 logger.addHandler(stream_handler)

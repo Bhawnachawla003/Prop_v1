@@ -96,7 +96,7 @@ def safe_get_column(df: pd.DataFrame, column_name: str, default=None):
 @st.cache_data
 def load_auction_data():
     """Load and preprocess auction data from CSV with robust error handling."""
-    csv_path = r"C:\Users\Amit Sharma\ai-platform\frontend\ibbi_auctions_enriched_2025-07-29_05-48-55 (1).csv"
+    csv_path = r"auction_exports/combined_auctions_20250719.csv"
     
     try:
         df = pd.read_csv(csv_path)
@@ -385,3 +385,4 @@ elif page == "🧠 AI Auction Insights":
                         st.markdown(insight_data) 
             else:
                 st.error("Could not fetch insights from backend")
+

@@ -11,3 +11,7 @@ pdfplumber
 camelot-py
 pdf2image
 plotly
+streamlit
+python-docx
+
+

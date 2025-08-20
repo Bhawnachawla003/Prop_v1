@@ -134,6 +134,7 @@ def load_auction_data():
         # Pick the latest file by modification time
         latest_file = max(csv_files, key=os.path.getmtime)
         df = pd.read_csv(latest_file)
+        print(df.dtypes)
 
         
         # Rename columns for clarity
@@ -540,3 +541,4 @@ elif page == "🤖 AI Analysis":
                         st.markdown(insight_data) 
             else:
                 st.error("Could not fetch insights from backend")
+

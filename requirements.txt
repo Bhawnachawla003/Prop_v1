@@ -10,3 +10,4 @@ pydantic
 pdfplumber
 camelot-py
 pdf2image
+plotly

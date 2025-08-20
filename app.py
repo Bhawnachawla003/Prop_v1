@@ -1,527 +1,542 @@
-from fastapi import FastAPI, Body, HTTPException
-from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import JSONResponse
-import os
-import fitz # PyMuPDF
-import pytesseract
-from PIL import Image
-from langchain_groq import ChatGroq
-from dotenv import load_dotenv
-from typing import Optional, List, Tuple
-import logging
-from io import BytesIO
+import streamlit as st
+import pandas as pd
+import plotly.express as px
+import plotly.graph_objects as go
+from plotly.subplots import make_subplots
+import numpy as np
 import requests
-import re
-import json
-from pydantic import BaseModel, Field
-import pdfplumber
-import camelot
-from pdf2image import convert_from_bytes
 import io
+from docx import Document
+from PyPDF2 import PdfReader
+import datetime as dt
+import os
+from dotenv import load_dotenv
+import glob
+import time
+from typing import Dict, Any, Optional, List
+import json
+from urllib.parse import urljoin
 
-# Initialize FastAPI app
-app = FastAPI()
 
-# Configure CORS
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=[
-        "http://localhost:8501",  # Streamlit default
-        "http://192.168.1.17:8501"  # Your network URL
-    ],
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
-# Configure logging
-logging.basicConfig(
-    level=logging.INFO,
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
-)
-logger = logging.getLogger(__name__)
+
+# Try optional AI deps (app continues even if missing)
+try:
+    from langchain_core.prompts import PromptTemplate
+    from langchain.chains import LLMChain
+    from langchain_huggingface import HuggingFaceEndpoint
+    HAS_LANGCHAIN = True
+except Exception:
+    HAS_LANGCHAIN = False
+
+BACKEND_BASE_URL = os.getenv("BANK_AUCTION_INSIGHTS_API_URL", "http://localhost:8000")
+AUCTION_INSIGHTS_ENDPOINT = "/auction-insights"
+
+def get_auction_insights(payload: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+    """Get AI insights from backend with proper error handling."""
+    try:
+        response = requests.post(
+            urljoin(BACKEND_BASE_URL, AUCTION_INSIGHTS_ENDPOINT),
+            json=payload,
+            timeout=60
+        )
+        response.raise_for_status()
+        return response.json()
+    except requests.exceptions.RequestException as e:
+        st.error(f"Backend connection error: {str(e)}")
+        return None
+    except json.JSONDecodeError:
+        st.error("Invalid response format from backend")
+        return None
+    
+
+
+
+
 
 # Load environment variables
 load_dotenv()
+HF_API_KEY = (os.getenv("HF_API_KEY") or "").strip()
 
+st.set_page_config(
+    page_title="Auction Portal India",
+    page_icon="🏛️",
+    layout="wide",
+    initial_sidebar_state="expanded"
+)
 
-# --- Text Processing Functions ---
-
-def is_pdf_scanned(pdf_bytes: bytes) -> bool:
-    """
-    Determine if a PDF is scanned by checking for the absence of text
-    and the presence of images.
-    """
-    try:
-        # Check for extractable text using pdfplumber
-        with pdfplumber.open(io.BytesIO(pdf_bytes)) as pdf:
-            has_text = any(page.extract_text() for page in pdf.pages)
-            if has_text:
-                return False  # Text found, so it's not a scanned image.
-
-        # If no text, check for images using PyMuPDF (more reliable)
-        doc = fitz.open(stream=pdf_bytes, filetype="pdf")
-        has_images = any(page.get_images(full=True) for page in doc)
-        
-        return has_images # It's a scanned PDF if no text but images are present.
-
-    except Exception as e:
-        print(f"[ERROR] is_pdf_scanned failed: {e}")
-        return False  # Default to not scanned on unexpected error
-
-def extract_assets_from_text(text: str) -> list:
-    def is_valid_price(value: str) -> bool:
-        """Check if a string is a valid numeric price (not a date, year, or phone number)."""
-        if not re.search(r'\d', value):
-            return False
-        value_clean = value.replace(",", "").strip()
-        # Discard years
-        if value_clean.isdigit() and 1900 <= int(value_clean) <= 2100:
-            return False
-        # Discard very large numbers that look like phone numbers (>10 digits)
-        if value_clean.isdigit() and len(value_clean) > 10:
-            return False
-        # Discard very small numbers (e.g., less than 2 digits, except decimals)
-        if value_clean.isdigit() and len(value_clean) < 2:
-            return False
-        return True
-
-    assets = []
-
-    # Try to find assets based on common keywords
-    asset_keywords = ["Land & Building", "RESIDENTIAL FLAT", "Plant & Machinery"]
-    descriptions_with_keywords = re.split(f'({"|".join(asset_keywords)})', text, flags=re.IGNORECASE)
-    descriptions_with_keywords = [d.strip() for d in descriptions_with_keywords if d.strip()]
-
-    # Merge keyword and description
-    asset_descriptions = []
-    for i in range(0, len(descriptions_with_keywords), 2):
-        if i + 1 < len(descriptions_with_keywords):
-            asset_descriptions.append(descriptions_with_keywords[i] + " " + descriptions_with_keywords[i + 1])
-        else:
-            asset_descriptions.append(descriptions_with_keywords[i])
-
-    # Extract price-like numbers
-    price_pattern = re.compile(r'[\d,]+\.\d{1,2}|[\d,]+')
-    all_prices = price_pattern.findall(text)
-    all_prices = [p.replace(",", "") for p in all_prices if is_valid_price(p)]
-
-    # Take only last 18 values if there are many
-    if len(all_prices) >= 18:
-        relevant_prices = all_prices[-18:]
-    else:
-        relevant_prices = all_prices
-
-    price_index = 0
-    for description in asset_descriptions:
-        current_asset = {
-            "block_name": "",
-            "asset_description": description.strip(),
-            "reserve_price": "",
-            "emd_amount": "",
-            "incremental_bid_amount": ""
+# Custom CSS
+st.markdown("""
+    <style>
+        .main-header {
+            font-size: 2.5rem;
+            color: #1f77b4;
+            text-align: center;
+            margin-bottom: 2rem;
+            font-weight: bold;
         }
+        .metric-tile {
+            background: linear-gradient(135deg, #ff6b6b 0%, #ff8e53 100%);
+            padding: 1rem;
+            border-radius: 10px;
+            color: white;
+            text-align: center;
+            margin: 0.5rem 0;
+        }
+        .analytics-header {
+            font-size: 1.8rem;
+            color: #2e7d32;
+            margin-bottom: 1rem;
+            font-weight: bold;
+        }
+    </style>
+""", unsafe_allow_html=True)
 
-        # Set block name
-        if "Land & Building" in description:
-            current_asset["block_name"] = "Land & Building"
-        elif "RESIDENTIAL FLAT" in description:
-            current_asset["block_name"] = "RESIDENTIAL FLAT"
-        elif "Plant & Machinery" in description:
-            current_asset["block_name"] = "PLANT & MACHINERY"
+# Sidebar Navigation
+st.sidebar.title("🏛️ Auction Portal")
+st.sidebar.markdown("---")
 
-        # Assign only if next 3 prices are valid
-        if price_index + 3 <= len(relevant_prices):
-            group = relevant_prices[price_index:price_index + 3]
-            if all(is_valid_price(p) for p in group):
-                current_asset["reserve_price"], current_asset["emd_amount"], current_asset["incremental_bid_amount"] = group
-            price_index += 3
+page = st.sidebar.radio(
+    "Navigate to:",
+    ["🏠 Dashboard", "🔍 Search Analytics", "📊 Basic Analytics", "🤖 AI Analysis"],
+    index=0
+)
 
-        assets.append(current_asset)
+def check_backend_connection() -> bool:
+    """Check if backend is reachable with retry logic."""
+    retries = 3
+    for attempt in range(retries):
+        try:
+            response = requests.get(
+                urljoin(BACKEND_BASE_URL, "/ping"),
+                timeout=5
+            )
+            if response.status_code == 200:
+                return True
+        except requests.exceptions.RequestException:
+            if attempt == retries - 1: 
+                return False
+            time.sleep(1)  
+    return False
 
-    return assets
-    
-def format_tables_as_markdown(tables: List[List[List[str]]]):
-    markdown = ""
-    for table in tables:
-        if not table or len(table) < 2:
-            continue
-        headers = [h.strip() if h else "" for h in table[0]]
-        markdown += "\n| " + " | ".join(headers) + " |\n"
-        markdown += "| " + " | ".join(["---"] * len(headers)) + " |\n"
-        for row in table[1:]:
-            row = [cell.strip().replace("\n", " ") if cell else "" for cell in row]
-            while len(row) < len(headers):
-                row.append("")
-            markdown += "| " + " | ".join(row) + " |\n"
-    return markdown
 
-def extract_tables_with_camelot(pdf_bytes: bytes, page_number: int = None) -> List[List[List[str]]]:
-    """
-    Extracts tables from a specific page of a PDF using Camelot.
-    Tries both 'lattice' and 'stream' flavors.
-    """
-    tables = []
-   # page_str = str(page_number)
-    page_str = "all" if page_number is None else str(page_number)
-    
+# Load data
+@st.cache_data
+def load_auction_data():
+    csv_path = r"C:\Users\Amit Sharma\ai-platform\frontend\auction_exports\combined_auctions_20250819_154419.csv"
     try:
-        # Try 'lattice' for tables with clear lines
-        print(f"[INFO] Trying Camelot with 'lattice' flavor on page {page_str}...")
-        lattice_tables = camelot.read_pdf(io.BytesIO(pdf_bytes), pages=page_str, flavor='lattice')
-        if lattice_tables.n > 0:
-            tables.extend([table.data for table in lattice_tables])
-            print(f"[INFO] Found {lattice_tables.n} table(s) with 'lattice' flavor.")
-            return tables
-
-        # If that fails, try 'stream' for tables without clear lines
-        print(f"[INFO] 'lattice' failed, trying 'stream' flavor on page {page_str}...")
-        stream_tables = camelot.read_pdf(io.BytesIO(pdf_bytes), pages=page_str, flavor='stream')
-        if stream_tables.n > 0:
-            tables.extend([table.data for table in stream_tables])
-            print(f"[INFO] Found {stream_tables.n} table(s) with 'stream' flavor.")
-            return tables
-            
-    except Exception as e:
-        print(f"[ERROR] Camelot table extraction failed: {e}")
+        # Get list of CSV files
+        csv_files = glob.glob("auction_exports/combined_auctions_*.csv")
         
-    return tables
-
-def ocr_pdf(pdf_bytes: io.BytesIO) -> Tuple[str, List]:
-    """
-    Runs OCR on all pages of a PDF and returns extracted text + empty table list.
-    """
-    ocr_text = ""
-    tables = []
-
-    try:
-        images = convert_from_bytes(pdf_bytes.getvalue())
-        for img in images:
-            text = pytesseract.image_to_string(img)
-            ocr_text += text.strip() + "\n"
-    except Exception as e:
-        print(f"[ERROR] OCR failed: {e}")
-
-    return ocr_text, tables
-
-
-def fetch_text_from_url(pdf_url: str) -> Tuple[str, List, bool]:
-    # Download PDF bytes
-    response = requests.get(pdf_url, timeout=15)
-    response.raise_for_status()
-    pdf_bytes = response.content
-    pdf_io = io.BytesIO(pdf_bytes)
-
-    raw_text = ""
-    tables = []
-    scanned_pdf = False
-
-    try:
-        # 1. Primary extraction with pdfplumber
-        with pdfplumber.open(pdf_io) as pdf:
-            for page in pdf.pages:
-                page_text = page.extract_text() or ""
-                raw_text += page_text.strip() + "\n"
-
-        # 2. Check if pdfplumber failed to extract text, and use OCR if so.
-        # This is the new, more robust logic.
-        if not raw_text.strip():
-            print("[INFO] pdfplumber extracted no text. Falling back to OCR...")
-            scanned_pdf = True
-            raw_text, tables = ocr_pdf(pdf_io)
+        if not csv_files:
+            st.error("❌ No CSV files found in auction_exports folder.")
+            return None, None
         
-        # 3. If no tables were found, use Camelot as a fallback.
-        if not tables and not scanned_pdf:
-            print("[INFO] pdfplumber did not find any tables. Trying Camelot on All Pages...")
-            tables = extract_tables_with_camelot(pdf_bytes)
+        # Pick the latest file by modification time
+        latest_file = max(csv_files, key=os.path.getmtime)
+        df = pd.read_csv(latest_file)
 
+        
+        # Rename columns for clarity
+        df = df.rename(columns={
+            'Auction ID/CIN/LLPIN': 'Auction ID',
+            'Bank/Organisation Name': 'Bank',
+            'Location-City/District/address': 'Location',
+            '_Auction date': 'Auction Date',
+            '_Last Date of EMD Submission': 'EMD Submission Date',
+            '_Reserve Price': 'Reserve Price',
+            'EMD Amount': 'EMD Amount',
+            'Nature of Assets': 'Nature of Assets',
+            'Details URL': 'Details URL',
+            'Auction Notice URL': 'Notice URL',
+            'Source': 'Source'
+        })
+
+        # Convert date columns (always tz-naive)
+        df['EMD Submission Date'] = pd.to_datetime(df['EMD Submission Date'], format="%d-%m-%Y", errors='coerce')
+        df['Auction Date'] = pd.to_datetime(df['Auction Date'], format="%d-%m-%Y", errors='coerce')
+
+        # Use tz-naive date for "today"
+        today_date = pd.Timestamp.now(tz=None).date()
+
+        # Calculate days_until_submission safely
+        if 'days_until_submission' not in df.columns:
+            df['days_until_submission'] = df['EMD Submission Date'].apply(
+                lambda x: (x.date() - today_date).days if pd.notna(x) else -999
+            )
+
+        # Clean numeric columns
+        df['Reserve Price'] = pd.to_numeric(df['Reserve Price'].astype(str).str.replace(r'[,₹\s]', '', regex=True), errors='coerce')
+        df['EMD Amount'] = pd.to_numeric(df['EMD Amount'].astype(str).str.replace(r'[,₹\s]', '', regex=True), errors='coerce')
+
+        # Calculate EMD % and categorize
+        df['EMD %'] = (df['EMD Amount'] / df['Reserve Price'] * 100).round(2)
+        df['EMD % Category'] = df.apply(
+            lambda row: f">10% {row['EMD %']:.2f}%" if row['EMD %'] > 10 else f"<10% {row['EMD %']:.2f}%",
+            axis=1
+        )
+
+        if df['EMD Submission Date'].isna().any():
+            st.warning("⚠️ Some EMD Submission Dates could not be parsed and are set to NaT. These rows may have invalid data.")
+
+        return df, csv_path
     except Exception as e:
-        print(f"[ERROR] PDF extraction failed: {e}")
-        # If pdfplumber fails entirely, we check if it's a scanned PDF
-        if is_pdf_scanned(pdf_bytes):
-            scanned_pdf = True
-            raw_text, tables = ocr_pdf(pdf_io)
-        else:
-            print("[INFO] PDF extraction failed but document is not scanned. No OCR fallback.")
-            raw_text = ""
-            tables = []
+        st.error(f"❌ Failed to load data: {e}")
+        return None, None
 
-    return raw_text.strip(), tables, scanned_pdf
+df, latest_csv = load_auction_data()
 
-def truncate_text(text: str, max_words: int = 5000) -> str:
-    words = text.split()
-    return " ".join(words[:max_words]) if len(words) > max_words else text
+def display_insights(insights: dict):
+    """Display the insights in a structured format."""
+    st.success(" Insights generated successfully!")
+    
+    # Main summary section
+    with st.expander("Auction Summary", expanded=True):
+        if 'corporate_debtor' in insights:
+            st.markdown(f"**Corporate Debtor:** {insights['corporate_debtor']}")
+        
+        if 'assets' in insights:
+            st.subheader("Assets Information")
+            col1, col2 = st.columns(2)
+            with col1:
+                if 'description' in insights['assets']:
+                    st.markdown(f"**Description:** {insights['assets']['description']}")
+            with col2:
+                if 'reserve_price' in insights['assets']:
+                    st.markdown(f"**Reserve Price:** {insights['assets']['reserve_price']}")
+    
+    # Financial terms section
+    if 'financial_terms' in insights:
+        with st.expander("💰 Financial Terms", expanded=False):
+            terms = insights['financial_terms']
+            if 'emd' in terms:
+                st.markdown(f"**EMD Amount:** {terms['emd']}")
+            if 'bid_increments' in terms and terms['bid_increments']:
+                st.markdown("**Bid Increments:**")
+                for increment in terms['bid_increments']:
+                    st.markdown(f"- {increment}")
+    
+    # Timeline section
+    if 'timeline' in insights:
+        with st.expander("⏰ Timeline", expanded=False):
+            timeline = insights['timeline']
+            if 'auction_date' in timeline:
+                st.markdown(f"**Auction Date:** {timeline['auction_date']}")
+            if 'inspection_period' in timeline:
+                st.markdown(f"**Inspection Period:** {timeline['inspection_period']}")
+    
+    # Validation section
+    if 'validation' in insights:
+        with st.expander("🔍 Data Validation", expanded=False):
+            validation = insights['validation']
+            if 'debtor_match' in validation:
+                st.markdown(f"**Debtor Match:** {'✅ Valid' if validation['debtor_match'] else '❌ Mismatch'}")
+            if 'discrepancies' in validation and validation['discrepancies']:
+                st.markdown("**Discrepancies Found:**")
+                for field, details in validation['discrepancies'].items():
+                    st.markdown(f"- {field}: Notice={details.get('notice_value', 'N/A')}, CSV={details.get('csv_value', 'N/A')}")
 
-def clean_llm_output(output: str) -> str:
-    import re
-    match = re.search(r"{.*}", output, re.DOTALL)
-    return match.group(0) if match else output
+connection_status = check_backend_connection()
+if connection_status:
+    st.sidebar.markdown(
+        '<div class="connection-status connection-success">✓ Backend Connected</div>',
+        unsafe_allow_html=True
+    )
+else:
+    st.sidebar.markdown(
+        '<div class="connection-status connection-error">✗ Backend Disconnected</div>',
+        unsafe_allow_html=True
+    )
+    st.sidebar.error(f"Ensure backend is running at: {BACKEND_BASE_URL}")
 
-def normalize_keys(obj):
-    if isinstance(obj, dict):
-        return {k.lower().replace(" ", "_"): normalize_keys(v) for k, v in obj.items()}
-    elif isinstance(obj, list):
-        return [normalize_keys(i) for i in obj]
+# Load data
+df, latest_csv = load_auction_data()
+
+# Dashboard Page
+if page == "🏠 Dashboard" and df is not None:
+    st.markdown('<div class="main-header">🏛️ Auction Portal India</div>', unsafe_allow_html=True)
+    st.markdown(f"**Last Updated:** {latest_csv.split('_')[-1].split('.')[0] if latest_csv else 'Unknown'}")
+
+    # Summary metrics
+    col1, col2, col3, col4 = st.columns(4)
+    
+    with col1:
+        total_auctions = len(df)
+        st.metric("Total Auctions", total_auctions)
+    
+    with col2:
+        invalid_count = df['EMD Submission Date'].isna().sum()
+        st.metric("Invalid EMD Dates", invalid_count)
+    
+    with col3:
+        active_auctions = len(df[df['days_until_submission'] >= 0])
+        st.metric("Active Auctions", active_auctions)
+    
+    with col4:
+        avg_reserve = df['Reserve Price'].mean()
+        st.metric("Avg Reserve Price", f"₹{avg_reserve:,.0f}" if not pd.isna(avg_reserve) else "N/A")
+
+    # Display filtered data
+    filtered_df = df[df['days_until_submission'] >= 0]
+    if not filtered_df.empty:
+        st.dataframe(filtered_df[['Auction ID', 'Bank', 'Location', 'Auction Date', 'EMD Submission Date',
+                                 'Reserve Price', 'EMD Amount', 'EMD %', 'EMD % Category', 'Nature of Assets',
+                                 'Details URL', 'Notice URL', 'Source', 'days_until_submission']],
+                     use_container_width=True)
+        st.write(f"**Total Auctions (Today or Future):** {len(filtered_df)}")
     else:
-        return obj
+        st.info("✅ No auctions found for today or future dates.")
 
-def clean_assets(assets: list) -> list:
-    """
-    Cleans OCR noise from asset descriptions and formats numeric values.
-    """
-    cleaned_assets = []
+# Search Analytics Page
+elif page == "🔍 Search Analytics" and df is not None:
+    st.markdown('<div class="main-header">🔍 Search Analytics</div>', unsafe_allow_html=True)
+    st.markdown(f"**Last Updated:** {latest_csv.split('_')[-1].split('.')[0] if latest_csv else 'Unknown'}")
 
-    for asset in assets:
-        cleaned_asset = asset.copy()
+    invalid_count = df['EMD Submission Date'].isna().sum()
+    st.markdown(f"""
+        <div class="metric-tile">
+            <h3>{invalid_count}</h3>
+            <p>Invalid EMD Submission Dates</p>
+        </div>
+    """, unsafe_allow_html=True)
 
-        # 1. Clean asset description
-        desc = asset.get("asset_description", "")
-        desc = re.sub(r"http\S+|www\.\S+", "", desc)  # Remove URLs
-        desc = re.sub(r"\S+@\S+", "", desc)  # Remove email addresses
-        desc = re.sub(r"\s+", " ", desc)  # Remove multiple spaces/newlines
-        cleaned_asset["asset_description"] = desc.strip()
+    filtered_df = df[df['days_until_submission'] >= 0].copy()
 
-        # 2. Clean numeric fields
-        for field in ["reserve_price", "emd_amount", "incremental_bid_amount"]:
-            value = asset.get(field, "")
-            if value:
-                # Keep only digits, commas, and decimal points
-                value_clean = re.sub(r"[^\d.,]", "", value)
-                value_clean = value_clean.replace(",", "")  # Remove commas for uniformity
-                cleaned_asset[field] = value_clean if value_clean else ""
-            else:
-                cleaned_asset[field] = ""
+    # Location Filter
+    use_location_filter = st.checkbox("Use Location Filter", value=False)
+    if use_location_filter:
+        unique_locations = sorted(filtered_df['Location'].dropna().unique())
+        selected_locations = st.multiselect(
+            "Select Locations",
+            options=unique_locations,
+            default=None
+        )
+        if selected_locations:
+            filtered_df = filtered_df[filtered_df['Location'].isin(selected_locations)]
 
-        cleaned_assets.append(cleaned_asset)
+    # Range Slider for days_until_submission
+    use_days_filter = st.checkbox("Use Days Until Submission Filter", value=False)
+    if use_days_filter and not filtered_df.empty:
+        min_days = int(filtered_df['days_until_submission'].min())
+        max_days = int(filtered_df['days_until_submission'].max())
+        days_range = st.slider(
+            "Filter by Days Until Submission",
+            min_value=min_days,
+            max_value=max_days,
+            value=(min_days, max_days)
+        )
+        filtered_df = filtered_df[
+            (filtered_df['days_until_submission'] >= days_range[0]) &
+            (filtered_df['days_until_submission'] <= days_range[1])
+        ]
 
-    return cleaned_assets
+    # Checkbox and Date Input for EMD Submission Date
+    use_date_filter = st.checkbox("Use EMD Submission Date Filter", value=False)
+    if use_date_filter:
+        selected_date = st.date_input("Select EMD Submission Date", value=pd.Timestamp.now(tz=None).date(), disabled=not use_date_filter)
+        filtered_df = filtered_df[filtered_df['EMD Submission Date'].dt.date == selected_date]
 
-# --- Auction Insights Model and Endpoint ---
-class AuctionDetails(BaseModel):
-    # Accept both original CSV headers and snake_case versions
-    name_of_corporate_debtor_pdf_: str = Field(..., alias="Name of Corporate Debtor (PDF)")
-    auction_notice_url: str = Field(..., alias="Auction Notice URL")
-    date_of_auction_pdf: Optional[str] = Field(None, alias="Date of Auction (PDF)")
-    unique_number: Optional[str] = Field(None, alias="Unique Number")
-    ip_registration_number: Optional[str] = Field(None, alias="IP Registration Number")
-    auction_platform: Optional[str] = Field(None, alias="Auction Platform")
-    details_url: Optional[str] = Field(None, alias="Details URL")
+    # EMD % Filter
+    use_emd_percent_filter = st.checkbox("Use EMD % Filter", value=False)
+    if use_emd_percent_filter:
+        emd_options = [">10%", "<10%"]
+        selected_emd = st.multiselect(
+            "Select EMD % Category",
+            options=emd_options,
+            default=None
+        )
+        if selected_emd:
+            filtered_df = filtered_df[filtered_df['EMD % Category'].str.contains('|'.join(selected_emd))]
+
+    if not filtered_df.empty:
+        st.dataframe(filtered_df[['Auction ID', 'Bank', 'Location', 'Auction Date', 'EMD Submission Date',
+                                 'Reserve Price', 'EMD Amount', 'EMD %', 'EMD % Category', 'Nature of Assets',
+                                 'Details URL', 'Notice URL', 'Source', 'days_until_submission']],
+                     use_container_width=True)
+        st.write(f"**Total Auctions:** {len(filtered_df)}")
+    else:
+        st.info("✅ No auctions found with the selected filters.")
+
+# Basic Analytics Page
+elif page == "📊 Basic Analytics" and df is not None:
+    st.markdown('<div class="main-header">📊 Basic Analytics</div>', unsafe_allow_html=True)
     
-    # For backward compatibility
-    borrower_name: Optional[str] = None
-    
-    class Config:
-        allow_population_by_field_name = True
-        extra = "ignore"  # Ignore extra fields
+    # Summary stats
+    col1, col2, col3 = st.columns(3)
+    with col1:
+        st.metric("Total Auctions", len(df))
+    with col2:
+        avg_reserve = df['Reserve Price'].mean()
+        st.metric("Avg Reserve Price", f"₹{avg_reserve:,.0f}" if not pd.isna(avg_reserve) else "N/A")
+    with col3:
+        total_banks = df['Bank'].nunique()
+        st.metric("Total Banks", total_banks)
+
+    st.markdown("---")
+
+    # Chart 1: Top 10 Banks by Auction Count
+    st.subheader("📈 Top 10 Banks by Auction Count")
+    bank_counts = df['Bank'].value_counts().head(10)
+    fig1 = px.bar(
+        x=bank_counts.values,
+        y=bank_counts.index,
+        orientation='h',
+        title="Top 10 Banks by Auction Count",
+        labels={'x': 'Number of Auctions', 'y': 'Bank'},
+        color=bank_counts.values,
+        color_continuous_scale='viridis'
+    )
+    fig1.update_layout(height=500, showlegend=False)
+    st.plotly_chart(fig1, use_container_width=True)
+
+    # Chart 2: Average Reserve Price by Location (Top 10)
+    st.subheader("💰 Top 10 Locations by Average Reserve Price")
+    location_avg = df.groupby('Location')['Reserve Price'].mean().sort_values(ascending=False).head(10)
+    fig2 = px.bar(
+        x=location_avg.values,
+        y=location_avg.index,
+        orientation='h',
+        title="Top 10 Locations by Average Reserve Price",
+        labels={'x': 'Average Reserve Price (₹)', 'y': 'Location'},
+        color=location_avg.values,
+        color_continuous_scale='plasma'
+    )
+    fig2.update_layout(height=500, showlegend=False)
+    st.plotly_chart(fig2, use_container_width=True)
+
+    # Chart 3: EMD Percentage Distribution
+    st.subheader("📊 EMD Percentage Distribution")
+    emd_dist = df['EMD %'].dropna()
+    fig3 = px.histogram(
+        emd_dist,
+        title="Distribution of EMD Percentages",
+        labels={'value': 'EMD %', 'count': 'Frequency'},
+        nbins=50,
+        color_discrete_sequence=['#ff6b6b']
+    )
+    fig3.update_layout(height=400)
+    st.plotly_chart(fig3, use_container_width=True)
+
+    # Chart 4: Auctions Over Time
+    st.subheader("📅 Auction Trends Over Time")
+    if not df['Auction Date'].isna().all():
+        df_time = df.dropna(subset=['Auction Date']).copy()
+        df_time['Month'] = df_time['Auction Date'].dt.to_period('M').dt.to_timestamp()
+        monthly_auctions = df_time.groupby('Month').size().reset_index(name='Count')
+        
+        fig4 = px.line(
+            monthly_auctions,
+            x='Month',
+            y='Count',
+            title="Number of Auctions per Month",
+            labels={'Count': 'Number of Auctions', 'Month': 'Month'}
+        )
+        fig4.update_traces(line_color='#2e7d32', line_width=3)
+        fig4.update_layout(height=400)
+        st.plotly_chart(fig4, use_container_width=True)
+    else:
+        st.info("No valid auction dates available for time trend analysis.")
+
+    # Chart 5: Reserve Price vs EMD Amount Scatter
+    st.subheader("💸 Reserve Price vs EMD Amount")
+    scatter_data = df.dropna(subset=['Reserve Price', 'EMD Amount'])
+    if not scatter_data.empty:
+        fig5 = px.scatter(
+            scatter_data,
+            x='Reserve Price',
+            y='EMD Amount',
+            title="Reserve Price vs EMD Amount",
+            labels={'Reserve Price': 'Reserve Price (₹)', 'EMD Amount': 'EMD Amount (₹)'},
+            opacity=0.6,
+            color='EMD %',
+            color_continuous_scale='viridis'
+        )
+        fig5.update_layout(height=500)
+        st.plotly_chart(fig5, use_container_width=True)
+    else:
+        st.info("No valid price data available for scatter plot.")
+
+        
+
+# AI Analysis Page
+elif page == "🤖 AI Analysis":
+    st.markdown('<div class="main-header">🤖 AI Analysis</div>', unsafe_allow_html=True)
+
+    if not connection_status:
+        st.error("Cannot generate insights - backend connection unavailable")
+        st.stop()
+
+    if df is None:
+        st.error("No auction data loaded")
+        st.stop()
+
+    # Clean and standardize column names for safety
+    df.columns = df.columns.str.strip().str.lower().str.replace(r"[^\w]+", "_", regex=True)
+
+    # Use CIN/LLPIN column as Auction ID selector
+    if 'auction_id' not in df.columns:
+        st.error("Column 'Auction ID' (auction_id) not found in the uploaded data.")
+        st.stop()
+
+    auction_ids = df['auction_id'].dropna().unique()
+    selected_id = st.selectbox("Select Auction ID (from CIN/LLPIN)", options=[""] + list(auction_ids))
+
+    if selected_id:
+        selected_row = df[df['auction_id'] == selected_id]
+        if selected_row.empty:
+            st.warning("Selected Auction ID not found in the data.")
+            st.stop()
+
+        auction_data = selected_row.iloc[0].to_dict()
+
+        st.write("Auction data keys:", auction_data.keys())
 
 
-async def generate_auction_insights(corporate_debtor: str, auction_notice_url: str) -> dict:
-    try:
-        # Step 1: Extract raw text, tables, and scanned PDF flag
-        raw_text, tables, scanned_pdf = fetch_text_from_url(auction_notice_url)
+        # Use the actual cleaned column names
+        corporate_debtor = auction_data.get('bank', '')
+        auction_notice_url = auction_data.get('notice_url', '')
 
-        # Fallback assets from OCR/text parsing
-        fallback_assets = extract_assets_from_text(raw_text)
+        
+        st.write("Data sent to backend:", {
+            "corporate_debtor": corporate_debtor,
+            "auction_notice_url": auction_notice_url
+        })
 
-        # Step 2: Decide whether to use fallback
-        use_fallback = not tables or len(tables[0]) <= 2
 
-        if use_fallback:
-            logger.warning("[FALLBACK] Using extracted assets from text due to missing or bad table...")
-            for asset in fallback_assets:
-                print("[DEBUG] Fallback Asset:", asset)
+        if not corporate_debtor or not auction_notice_url:
+            st.warning("Corporate Debtor name or Auction Notice URL missing for selected Auction ID.")
+            st.stop()
 
-            markdown_table = ""  # no table in fallback mode
-            assets_for_prompt = fallback_assets
-        else:
-            logger.info("[INFO] Using structured tables from PDF/OCR.")
-            markdown_table = format_tables_as_markdown(tables)
-            assets_for_prompt = None  # LLM will extract from markdown table
-
-        if assets_for_prompt:
-            assets_for_prompt = clean_assets(assets_for_prompt)
-
-        # Debug logs
-        logger.info("[DEBUG] OCR Used: %s", scanned_pdf)
-        logger.info("[DEBUG] Extracted Raw Text (First 500 chars):\n%s", raw_text[:500])
-        if markdown_table:
-            logger.info("[DEBUG] Extracted Table Preview (First 500 chars):\n%s", markdown_table[:500])
-
-        # Step 3: Early exit if no text found
-        if not raw_text.strip():
-            return {
-                "status": "error",
-                "message": "Auction notice appears to contain no usable text — even after OCR."
+        if st.button("Generate Insights"):
+            payload = {
+                "Name of Corporate Debtor (PDF)": str(auction_data.get('bank', '')),
+                "Auction Notice URL": str(auction_data.get('notice_url', '')),
+                "Reserve Price (PDF)": str(auction_data.get('reserve_price', '')),
+                "EMD Amount (PDF)": str(auction_data.get('emd_amount', '')),
+                "Date of Auction (PDF)": pd.to_datetime(auction_data.get('auction_date')).strftime("%Y-%m-%d") if pd.notna(auction_data.get('auction_date')) else "",
+                "Name of IP (PDF)": "",
+                "IP Registration Number": "",
+                "Unique Number": "",
+                "Auction Platform": "",
+                "Details URL": str(auction_data.get('details_url', '')),
+               "CIN/LLPIN": str(auction_data.get('auction_id', ''))
             }
 
-        # Step 4: Truncate raw text to avoid token overflow
-        truncated_text = truncate_text(raw_text)
+            payload = {k: v for k, v in payload.items() if v}
 
-        # Step 5: Build assets section for the prompt
-        if assets_for_prompt:
-            assets_section = f"\nAssets (extracted via OCR fallback):\n{json.dumps(assets_for_prompt, indent=2)}"
-        else:
-            assets_section = f"\n{markdown_table}"
+            
+            st.write("Final payload being sent to backend:", payload)
 
-        # Step 6: Construct prompt
-        prompt = f"""
-You are an expert financial analyst specializing in Indian auction notices.
+            with st.spinner("Generating insights..."):
+                insights = get_auction_insights(payload)
 
-Your job is to carefully extract key details from the below auction notice text.
-It may contain normal paragraphs, markdown tables, or pre-parsed OCR asset JSON.
-Read both carefully.
-
-Corporate Debtor: {corporate_debtor}
-
-Auction Notice Text:
-{truncated_text}
-
-{assets_section}
-
-Please extract the following insights and return them as a structured JSON:
-
-1. Extract all general details (e.g. dates, contacts, platform link, etc.) exactly as written — do not infer or modify them.
-2. Use the provided markdown table or OCR asset JSON (whichever is present) to populate the `"Assets"` list.
-3. One row = one asset. Do not duplicate or infer missing rows.
-4. If values are missing, leave them blank — do not guess.
-
-Additional Task:
-Rank my Auctions based on three components:
-- Legal Compliance
-- Economical Point of View
-- Market Trends
-
-Provide:
-- Individual scores for each component (0–10)
-- A final score (average or weighted)
-- A single-line summary of risk: "Low Risk", "No Risk", or "High Risk"
-- A 4-line bullet-point summary on what reference to use for each of the three components.
-
-Return the result in this **exact JSON format**:
-
-{{
-    "Corporate Debtor": "...",
-    "Auction Date": "...",
-    "Auction Time": "...",
-    "Last Date for EMD Submission": "...",
-    "Inspection Date": "...",
-    "Inspection Time": "...",
-    "Property Description": "...",
-    "Auction Platform": "...",
-    "Contact Email": "...",
-    "Contact Mobile": "...",
-    "Assets": [
-        {{
-            "Block Name": "...",
-            "Asset Description": "...",
-            "Auction Time": "...",
-            "Reserve Price": "...",
-            "EMD Amount": "...",
-            "Incremental Bid Amount": "..."
-        }}
-    ],
-    "Ranking": {{
-        "Legal Compliance Score": 0,
-        "Economical Score": 0,
-        "Market Trends Score": 0,
-        "Final Score": 0,
-        "Risk Summary": "...",
-        "Reference Summary": [
-            "...",
-            "...",
-            "...",
-            "..."
-        ]
-    }}
-}}
-"""
-
-        # Step 7: Call LLM
-        logger.info(f"Prompt word count: {len(prompt.split())}, char length: {len(prompt)}")
-        response = await llm.ainvoke(prompt, max_tokens=2048, temperature=0.2, top_p=0.9)
-
-        # Step 8: Parse LLM output
-        cleaned = clean_llm_output(response.content)
-        parsed = json.loads(cleaned)
-        normalized = normalize_keys(parsed)
-
-        return {
-            "status": "success",
-            "scanned_pdf": scanned_pdf,
-            "insights": normalized
-        }
-
-    except json.JSONDecodeError as e:
-        logger.warning(f"[PARSE_ERROR] Model response not in JSON: {e}")
-        return {
-            "status": "error",
-            "message": f"Invalid JSON format. {e}",
-            "insights": response.content if hasattr(response, 'content') else str(response)
-        }
-    except Exception as e:
-        logger.error(f"[ERROR] generate_auction_insights failed: {e}")
-        return {
-            "status": "error",
-            "message": str(e)
-        }
-    
-@app.get("/ping")
-def ping():
-    return {"status": "ok"}
+                st.write("Backend Response:", insights)
 
 
-@app.post("/auction-insights")
-async def get_auction_insights(auction_data: dict = Body(...)):
-    """
-    Generate accurate insights from auction notices.
-    """
-    try:
-        logger.info("Auction Data received: %s", auction_data)
-
-        corporate_debtor = (
-            auction_data.get("Name of Corporate Debtor (PDF)")
-            or auction_data.get("name_of_corporate_debtor_pdf_")
-            or auction_data.get("corporate_debtor")
-            or "Unknown Debtor"
-        )
-
-        auction_notice_url = (
-            auction_data.get("Auction Notice URL")
-            or auction_data.get("auction_notice_url")
-            or auction_data.get("details_url")
-            or "URL Not Provided"
-        )
-
-        logger.info("Debtor: %s, Notice URL: %s", corporate_debtor, auction_notice_url)
-        
-
-        summary = await generate_auction_insights(corporate_debtor, auction_notice_url)
-
-        # ✅ FIX: return summary (which may be JSON or plain text fallback)
-        return summary
-
-    except Exception as e:
-        logger.error("Error generating auction insights: %s", e)
-        return {"error": str(e)}
-    
-def initialize_services():
-    global llm
-    
-    # pytesseract.pytesseract.tesseract_cmd = r"C:\Program Files\Tesseract-OCR\tesseract.exe"
-
-    groq_api_key = os.getenv("GROQ_API_KEY")
-    if not groq_api_key:
-        raise RuntimeError("GROQ_API_KEY not set")
-    
-    llm = ChatGroq(
-        model="deepseek-r1-distill-llama-70b",
-        temperature=0,
-        api_key=groq_api_key,
-    )
-    logger.info("LLM initialized")
-
-
-initialize_services()
-
-if __name__ == "__main__":
-    import uvicorn
-    uvicorn.run(app, host="0.0.0.0", port=8000, reload=True)
+            if insights and "insights" in insights:
+                    insight_data = insights["insights"]
+                    if isinstance(insight_data, dict):
+                        display_insights(insight_data) 
+                    else:
+                        st.markdown(insight_data) 
+            else:
+                st.error("Could not fetch insights from backend")

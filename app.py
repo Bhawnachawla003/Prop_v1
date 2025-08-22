@@ -136,7 +136,7 @@ def load_auction_data():
         latest_file = max(csv_files, key=os.path.getmtime)
         df = pd.read_csv(latest_file)
         st.success(f"✅ Loaded data from {latest_file} with {len(df)} records.")
-        st.write(df.dtypes )
+        #st.write(df.dtypes )
         
         
 
@@ -757,5 +757,6 @@ elif page == "🤖 AI Analysis":
                         st.markdown(insight_data) 
             else:
                 st.error("Could not fetch insights from backend")
+
 
 

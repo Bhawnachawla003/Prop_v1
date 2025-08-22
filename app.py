@@ -118,7 +118,8 @@ def check_backend_connection() -> bool:
             time.sleep(1)  
     return False
 
-
+#####################################################################################################################################################################
+########################################################################################################################################################################
 # Load data
 @st.cache_data
 def load_auction_data():
@@ -134,7 +135,10 @@ def load_auction_data():
         # Pick the latest file by modification time
         latest_file = max(csv_files, key=os.path.getmtime)
         df = pd.read_csv(latest_file)
-        print(df.dtypes)
+        st.success(f"✅ Loaded data from {latest_file} with {len(df)} records.")
+        st.write(df.dtypes )
+        
+        
 
         
         # Rename columns for clarity
@@ -144,37 +148,48 @@ def load_auction_data():
             'Location-City/District/address': 'Location',
             '_Auction date': 'Auction Date',
             '_Last Date of EMD Submission': 'EMD Submission Date',
-            '_Reserve Price': 'Reserve Price',
-            'EMD Amount': 'EMD Amount',
+            '_Reserve Price': '₹Reserve Price',
+            'EMD Amount': '₹EMD Amount',
             'Nature of Assets': 'Nature of Assets',
             'Details URL': 'Details URL',
             'Auction Notice URL': 'Notice URL',
             'Source': 'Source'
         })
+        # Convert date columns to datetime64[ns] and create duplicate columns for filtering
+        df['EMD Submission Date_dt'] = pd.to_datetime(df['EMD Submission Date'], format="%d-%m-%Y", errors='coerce')
+        df['Auction Date_dt'] = pd.to_datetime(df['Auction Date'], format="%d-%m-%Y", errors='coerce')
 
-        # Convert date columns (always tz-naive)
+        # Convert date columns to datetime64[ns] and format as strings for display
         df['EMD Submission Date'] = pd.to_datetime(df['EMD Submission Date'], format="%d-%m-%Y", errors='coerce')
         df['Auction Date'] = pd.to_datetime(df['Auction Date'], format="%d-%m-%Y", errors='coerce')
 
-        # Use tz-naive date for "today"
+        # Convert to string format to avoid Arrow conversion issues (only date part)
+        df['EMD Submission Date'] = df['EMD Submission Date'].dt.strftime('%d-%m-%Y')
+        df['Auction Date'] = df['Auction Date'].dt.strftime('%d-%m-%Y')
+
+        # Use tz-naive date for "today" (as datetime object for consistency in calculations)
         today_date = pd.Timestamp.now(tz=None).date()
 
         # Calculate days_until_submission safely
         if 'days_until_submission' not in df.columns:
             df['days_until_submission'] = df['EMD Submission Date'].apply(
-                lambda x: (x.date() - today_date).days if pd.notna(x) else -999
+                lambda x: (pd.to_datetime(x).date() - today_date).days if pd.notna(x) and x != '' else -999
             )
-
         # Clean numeric columns
-        df['Reserve Price'] = pd.to_numeric(df['Reserve Price'].astype(str).str.replace(r'[,₹\s]', '', regex=True), errors='coerce')
-        df['EMD Amount'] = pd.to_numeric(df['EMD Amount'].astype(str).str.replace(r'[,₹\s]', '', regex=True), errors='coerce')
+        df['₹Reserve Price'] = pd.to_numeric(df['₹Reserve Price'].astype(str).str.replace(r'[,₹\s]', '', regex=True), errors='coerce')
+        df['₹EMD Amount'] = pd.to_numeric(df['₹EMD Amount'].astype(str).str.replace(r'[,₹\s]', '', regex=True), errors='coerce')
 
         # Calculate EMD % and categorize
-        df['EMD %'] = (df['EMD Amount'] / df['Reserve Price'] * 100).round(2)
-        df['EMD % Category'] = df.apply(
-            lambda row: f">10% {row['EMD %']:.2f}%" if row['EMD %'] > 10 else f"<10% {row['EMD %']:.2f}%",
-            axis=1
-        )
+        # Calculate EMD %
+        df['EMD %'] = (df['₹EMD Amount'] / df['₹Reserve Price'] * 100).round(2)
+
+        # Define bins and labels
+        bins = [-float("inf"), 5, 10, 15, 20, float("inf")]
+        labels = ["<5%", "5-10%", "10-15%", "15-20%", ">20%"]
+
+        # Categorize into bins
+        df['EMD % Category'] = pd.cut(df['EMD %'], bins=bins, labels=labels, right=False)
+
 
         if df['EMD Submission Date'].isna().any():
             st.warning("⚠️ Some EMD Submission Dates could not be parsed and are set to NaT. These rows may have invalid data.")
@@ -184,7 +199,10 @@ def load_auction_data():
         st.error(f"❌ Failed to load data: {e}")
         return None, None
 
-df, latest_csv = load_auction_data()
+
+
+
+
 
 def display_insights(insights: dict):
     """Display the insights in a structured format."""
@@ -249,6 +267,16 @@ else:
     )
     st.sidebar.error(f"Ensure backend is running at: {BACKEND_BASE_URL}")
 
+
+#####################################################################################################################################################################
+########################################################################################################################################################################
+
+
+
+
+
+
+
 # Load data
 df, latest_csv = load_auction_data()
 
@@ -256,6 +284,7 @@ df, latest_csv = load_auction_data()
 if page == "🏠 Dashboard" and df is not None:
     st.markdown('<div class="main-header">🏛️ Auction Portal India</div>', unsafe_allow_html=True)
     st.markdown(f"**Last Updated:** {latest_csv.split('_')[-1].split('.')[0] if latest_csv else 'Unknown'}")
+    
 
     # Summary metrics
     col1, col2, col3, col4 = st.columns(4)
@@ -272,25 +301,51 @@ if page == "🏠 Dashboard" and df is not None:
         active_auctions = len(df[df['days_until_submission'] >= 0])
         st.metric("Active Auctions", active_auctions)
     
+    from babel.numbers import format_currency
+    
     with col4:
-        avg_reserve = df['Reserve Price'].mean()
-        st.metric("Avg Reserve Price", f"₹{avg_reserve:,.0f}" if not pd.isna(avg_reserve) else "N/A")
+        avg_reserve = df[df['days_until_submission'] >= 0]['₹Reserve Price'].mean()
+        if not pd.isna(avg_reserve):
+            formatted_value = format_currency(avg_reserve, "INR", locale="en_IN")
+        else:
+            formatted_value = "N/A"
 
+    st.metric("Avg Reserve Price of active functions", formatted_value)
     # Display filtered data
     filtered_df = df[df['days_until_submission'] >= 0]
     if not filtered_df.empty:
         st.dataframe(filtered_df[['Auction ID', 'Bank', 'Location', 'Auction Date', 'EMD Submission Date',
-                                 'Reserve Price', 'EMD Amount', 'EMD %', 'EMD % Category', 'Nature of Assets',
-                                 'Details URL', 'Notice URL', 'Source', 'days_until_submission']],
+                                 '₹Reserve Price', '₹EMD Amount', 'EMD %', 'EMD % Category', 'Nature of Assets'
+                                 ,   'days_until_submission']],
                      use_container_width=True)
         st.write(f"**Total Auctions (Today or Future):** {len(filtered_df)}")
+ 
     else:
-        st.info("✅ No auctions found for today or future dates.")
+        st.info("✅ No auctions found for day or future dates.")
+        
+
+
+
+
+
+
+
+
+#####################################################################################################################################################################
+########################################################################################################################################################################
+
+
+
+
+
+
+
 
 # Search Analytics Page
 elif page == "🔍 Search Analytics" and df is not None:
     st.markdown('<div class="main-header">🔍 Search Analytics</div>', unsafe_allow_html=True)
     st.markdown(f"**Last Updated:** {latest_csv.split('_')[-1].split('.')[0] if latest_csv else 'Unknown'}")
+    
 
     invalid_count = df['EMD Submission Date'].isna().sum()
     st.markdown(f"""
@@ -301,6 +356,7 @@ elif page == "🔍 Search Analytics" and df is not None:
     """, unsafe_allow_html=True)
 
     filtered_df = df[df['days_until_submission'] >= 0].copy()
+    
 
     # Location Filter
     use_location_filter = st.checkbox("Use Location Filter", value=False)
@@ -334,46 +390,194 @@ elif page == "🔍 Search Analytics" and df is not None:
     use_date_filter = st.checkbox("Use EMD Submission Date Filter", value=False)
     if use_date_filter:
         selected_date = st.date_input("Select EMD Submission Date", value=pd.Timestamp.now(tz=None).date(), disabled=not use_date_filter)
-        filtered_df = filtered_df[filtered_df['EMD Submission Date'].dt.date == selected_date]
+        filtered_df = filtered_df[filtered_df['EMD Submission Date_dt'].dt.date == selected_date]
 
-    # EMD % Filter
+   # EMD % Filter
     use_emd_percent_filter = st.checkbox("Use EMD % Filter", value=False)
     if use_emd_percent_filter:
-        emd_options = [">10%", "<10%"]
+        emd_options = ["<5%", "5-10%", "10-15%", "15-20%", ">20%"]
         selected_emd = st.multiselect(
             "Select EMD % Category",
             options=emd_options,
             default=None
         )
         if selected_emd:
-            filtered_df = filtered_df[filtered_df['EMD % Category'].str.contains('|'.join(selected_emd))]
+            mask = filtered_df['EMD % Category'].str.contains('|'.join(selected_emd), na=False).fillna(False)
+            filtered_df = filtered_df[mask]
+
+    # Drop rows with any NaN values across all columns
+    filtered_df = filtered_df.dropna()
 
     if not filtered_df.empty:
         st.dataframe(filtered_df[['Auction ID', 'Bank', 'Location', 'Auction Date', 'EMD Submission Date',
-                                 'Reserve Price', 'EMD Amount', 'EMD %', 'EMD % Category', 'Nature of Assets',
-                                 'Details URL', 'Notice URL', 'Source', 'days_until_submission']],
+                                 '₹Reserve Price', '₹EMD Amount', 'EMD %', 'EMD % Category', 'Nature of Assets'
+                                 , 'days_until_submission']],
                      use_container_width=True)
         st.write(f"**Total Auctions:** {len(filtered_df)}")
     else:
         st.info("✅ No auctions found with the selected filters.")
 
+
+
+
+
+
+
+
+
+
+#####################################################################################################################################################################
+########################################################################################################################################################################
+
+
+
 # Basic Analytics Page
 elif page == "📊 Basic Analytics" and df is not None:
     st.markdown('<div class="main-header">📊 Basic Analytics</div>', unsafe_allow_html=True)
     
-    # Summary stats
-    col1, col2, col3 = st.columns(3)
-    with col1:
-        st.metric("Total Auctions", len(df))
-    with col2:
-        avg_reserve = df['Reserve Price'].mean()
-        st.metric("Avg Reserve Price", f"₹{avg_reserve:,.0f}" if not pd.isna(avg_reserve) else "N/A")
-    with col3:
+    # Inject custom CSS for improved metric tiles
+    st.markdown("""
+        <style>
+            .metric-grid {
+                display: flex;
+                flex-wrap: wrap;
+                gap: 15px;
+                padding: 15px;
+            }
+            .metric-tile {
+                background-color: #ffffff;
+                border-radius: 10px;
+                padding: 15px;
+                text-align: center;
+                box-shadow: 0 4px 6px rgba(0, 0, 0, 0.1);
+                transition: transform 0.2s, box-shadow 0.2s;
+                border: 1px solid #e0e0e0;
+                flex: 1;
+                min-width: 200px;
+            }
+            .metric-tile:hover {
+                transform: translateY(-5px);
+                box-shadow: 0 6px 12px rgba(0, 0, 0, 0.15);
+            }
+            .metric-tile h3 {
+                font-size: 1.5em;
+                margin: 0;
+                color: #1a73e8;
+                font-weight: bold;
+            }
+            .metric-tile p {
+                font-size: 0.9em;
+                margin: 5px 0 0 0;
+                color: #5f6368;
+                font-weight: 500;
+            }
+        </style>
+    """, unsafe_allow_html=True)
+
+    # Row 1: Total Auctions and Active Auctions
+    col1_row1, col2_row1 = st.columns(2)
+    with col1_row1:
+        st.markdown("""
+            <div class="metric-tile">
+                <h3>{}</h3>
+                <p>Total Auctions</p>
+            </div>
+        """.format(len(df)), unsafe_allow_html=True)
+    with col2_row1:
+        active_auctions = len(df[df['days_until_submission'] >= 0])
+        st.markdown("""
+            <div class="metric-tile">
+                <h3>{}</h3>
+                <p>Active Auctions</p>
+            </div>
+        """.format(active_auctions), unsafe_allow_html=True)
+
+    # Row 2: Avg Reserve Price (All) and Avg Reserve Price of Active Auctions
+    col1_row2, col2_row2 = st.columns(2)
+    with col1_row2:
+        from babel.numbers import format_currency
+        avg_reserve_all = int(df['₹Reserve Price'].mean()) if not pd.isna(df['₹Reserve Price'].mean()) else 0
+        formatted_value_all = format_currency(avg_reserve_all, "INR", locale="en_IN")
+        st.markdown("""
+            <div class="metric-tile">
+                <h3>{}</h3>
+                <p>Avg Reserve Price (All)</p>
+            </div>
+        """.format(formatted_value_all), unsafe_allow_html=True)
+    with col2_row2:
+        avg_reserve_active = int(df[df['days_until_submission'] >= 0]['₹Reserve Price'].mean()) if not pd.isna(df[df['days_until_submission'] >= 0]['₹Reserve Price'].mean()) else 0
+        formatted_value_active = format_currency(avg_reserve_active, "INR", locale="en_IN")
+        st.markdown("""
+            <div class="metric-tile">
+                <h3>{}</h3>
+                <p>Avg Reserve Price of Active Auctions</p>
+            </div>
+        """.format(formatted_value_active), unsafe_allow_html=True)
+
+    # Row 3: Sum of Reserve Price (All) and Sum of Reserve Price of Active Auctions
+    col1_row3, col2_row3 = st.columns(2)
+    with col1_row3:
+        sum_reserve_all = int(df['₹Reserve Price'].sum()) if not pd.isna(df['₹Reserve Price'].sum()) else 0
+        formatted_value_sum_all = format_currency(sum_reserve_all, "INR", locale="en_IN")
+        st.markdown("""
+            <div class="metric-tile">
+                <h3>{}</h3>
+                <p>Sum of Reserve Price (All)</p>
+            </div>
+        """.format(formatted_value_sum_all), unsafe_allow_html=True)
+    with col2_row3:
+        sum_reserve_active = int(df[df['days_until_submission'] >= 0]['₹Reserve Price'].sum()) if not pd.isna(df[df['days_until_submission'] >= 0]['₹Reserve Price'].sum()) else 0
+        formatted_value_sum_active = format_currency(sum_reserve_active, "INR", locale="en_IN")
+        st.markdown("""
+            <div class="metric-tile">
+                <h3>{}</h3>
+                <p>Sum of Reserve Price of Active Auctions</p>
+            </div>
+        """.format(formatted_value_sum_active), unsafe_allow_html=True)
+
+       # Row 4: Total Banks and Top 5 Banks
+    col1_row4, col2_row4 = st.columns(2)  # Changed to 2 columns to accommodate both cards
+    with col1_row4:
         total_banks = df['Bank'].nunique()
-        st.metric("Total Banks", total_banks)
+        st.markdown("""
+            <div class="metric-tile">
+                <h3>{}</h3>
+                <p>Total Banks</p>
+            </div>
+        """.format(total_banks), unsafe_allow_html=True)
+    with col2_row4:
+        # Calculate top 5 banks by count
+        top_banks = df['Bank'].value_counts().head(5).to_dict()
+        bank_list = "<ul>" + "".join([f"<li>{bank}: {count}</li>" for bank, count in top_banks.items()]) + "</ul>"
+        st.markdown("""
+            <div class="metric-tile">
+                <h3>Top 5 Banks</h3>
+                <p>{}</p>
+            </div>
+        """.format(bank_list), unsafe_allow_html=True)
+
+    # Row 5: Min and Max of Reserve Price of Active Auctions
+    col1_row5, col2_row5 = st.columns(2)
+    with col1_row5:
+        min_reserve_active = int(df[df['days_until_submission'] >= 0]['₹Reserve Price'].min()) if not pd.isna(df[df['days_until_submission'] >= 0]['₹Reserve Price'].min()) else 0
+        formatted_min_active = format_currency(min_reserve_active, "INR", locale="en_IN")
+        st.markdown("""
+            <div class="metric-tile">
+                <h3>{}</h3>
+                <p>Min of Reserve Price of Active Auctions</p>
+            </div>
+        """.format(formatted_min_active), unsafe_allow_html=True)
+    with col2_row5:
+        max_reserve_active = int(df[df['days_until_submission'] >= 0]['₹Reserve Price'].max()) if not pd.isna(df[df['days_until_submission'] >= 0]['₹Reserve Price'].max()) else 0
+        formatted_max_active = format_currency(max_reserve_active, "INR", locale="en_IN")
+        st.markdown("""
+            <div class="metric-tile">
+                <h3>{}</h3>
+                <p>Max of Reserve Price of Active Auctions</p>
+            </div>
+        """.format(formatted_max_active), unsafe_allow_html=True)
 
     st.markdown("---")
-
     # Chart 1: Top 10 Banks by Auction Count
     st.subheader("📈 Top 10 Banks by Auction Count")
     bank_counts = df['Bank'].value_counts().head(10)
@@ -391,7 +595,7 @@ elif page == "📊 Basic Analytics" and df is not None:
 
     # Chart 2: Average Reserve Price by Location (Top 10)
     st.subheader("💰 Top 10 Locations by Average Reserve Price")
-    location_avg = df.groupby('Location')['Reserve Price'].mean().sort_values(ascending=False).head(10)
+    location_avg = df.groupby('Location')['₹Reserve Price'].mean().sort_values(ascending=False).head(10)
     fig2 = px.bar(
         x=location_avg.values,
         y=location_avg.index,
@@ -419,9 +623,9 @@ elif page == "📊 Basic Analytics" and df is not None:
 
     # Chart 4: Auctions Over Time
     st.subheader("📅 Auction Trends Over Time")
-    if not df['Auction Date'].isna().all():
-        df_time = df.dropna(subset=['Auction Date']).copy()
-        df_time['Month'] = df_time['Auction Date'].dt.to_period('M').dt.to_timestamp()
+    if not df['Auction Date_dt'].isna().all():
+        df_time = df.dropna(subset=['Auction Date_dt']).copy()
+        df_time['Month'] = df_time['Auction Date_dt'].dt.to_period('M').dt.to_timestamp()
         monthly_auctions = df_time.groupby('Month').size().reset_index(name='Count')
         
         fig4 = px.line(
@@ -439,12 +643,12 @@ elif page == "📊 Basic Analytics" and df is not None:
 
     # Chart 5: Reserve Price vs EMD Amount Scatter
     st.subheader("💸 Reserve Price vs EMD Amount")
-    scatter_data = df.dropna(subset=['Reserve Price', 'EMD Amount'])
+    scatter_data = df[df['days_until_submission'] >= 0].dropna(subset=['₹Reserve Price', '₹EMD Amount'])
     if not scatter_data.empty:
         fig5 = px.scatter(
             scatter_data,
-            x='Reserve Price',
-            y='EMD Amount',
+            x='₹Reserve Price',
+            y='₹EMD Amount',
             title="Reserve Price vs EMD Amount",
             labels={'Reserve Price': 'Reserve Price (₹)', 'EMD Amount': 'EMD Amount (₹)'},
             opacity=0.6,
@@ -456,7 +660,19 @@ elif page == "📊 Basic Analytics" and df is not None:
     else:
         st.info("No valid price data available for scatter plot.")
 
-        
+
+
+
+
+#####################################################################################################################################################################
+########################################################################################################################################################################      
+
+
+
+
+
+
+
 
 # AI Analysis Page
 elif page == "🤖 AI Analysis":
@@ -541,4 +757,5 @@ elif page == "🤖 AI Analysis":
                         st.markdown(insight_data) 
             else:
                 st.error("Could not fetch insights from backend")
+
 

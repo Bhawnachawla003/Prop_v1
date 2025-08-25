@@ -337,7 +337,7 @@ elif page == "🔍 Search Analytics" and df is not None:
             filtered_df = filtered_df[mask]
 
     # Drop rows with any NaN values across all columns
-    filtered_df = filtered_df.dropna()
+    #filtered_df = filtered_df.dropna()
 
     if not filtered_df.empty:
         st.dataframe(filtered_df[['Auction ID', 'Bank', 'Location', 'Auction Date', 'EMD Submission Date',
@@ -1210,6 +1210,7 @@ if page == "🤖 AI Analysis":
                 except Exception as e:
                     # Catch any remaining unexpected errors outside the core function
                     st.error(f"An unexpected error occurred: {str(e)}")
+
 
 
 

@@ -941,9 +941,6 @@ class AuctionDetails(BaseModel):
     class Config:
         allow_population_by_field_name = True
         extra = "ignore"  
-
-
-
 def generate_auction_insights(corporate_debtor: str, auction_notice_url: str, llm) -> dict:
     try:
         
@@ -955,7 +952,8 @@ def generate_auction_insights(corporate_debtor: str, auction_notice_url: str, ll
         assets_for_prompt = None
         markdown_table = ""
         if use_fallback:
-            print("[FALLBACK] Using extracted assets from text due to missing/bad table")
+            # Using logging.warning is better practice than print
+            logging.warning("[FALLBACK] Using extracted assets from text due to missing/bad table") 
             assets_for_prompt = clean_assets(fallback_assets)
         else:
             markdown_table = format_tables_as_markdown(tables)
@@ -971,7 +969,7 @@ def generate_auction_insights(corporate_debtor: str, auction_notice_url: str, ll
             if assets_for_prompt else markdown_table
         )
 
-    
+        
         prompt = f"""
 You are an expert financial analyst specializing in Indian auction notices. Your primary role is to audit the listing quality and risk.
 
@@ -1086,11 +1084,10 @@ Return the result in this **exact JSON format**:
 }}
 """
     
-
-        print(f"[INFO] Prompt length: {len(prompt.split())} words")
+        logging.info(f"[INFO] Prompt length: {len(prompt.split())} words")
 
         response = llm.invoke(prompt, max_tokens=2048, temperature=0.2, top_p=0.9)
-        print("[INFO] Raw LLM response:", response.content[:500], "...")  
+        logging.info(f"[INFO] Raw LLM response: {response.content[:500]} ...") 
 
         parsed = extract_json_from_text(response.content)
         normalized = normalize_keys(parsed)
@@ -1101,7 +1098,8 @@ Return the result in this **exact JSON format**:
             "insights": normalized
         }
 
-     except Exception as e:
+    # FIX: Ensure this 'except' block is aligned exactly with the 'try' block above it.
+    except Exception as e: 
         # 🔑 DEBUGGING CHANGE: Capture the exact exception message and return it.
         error_msg = f"An error occurred during insight generation: {str(e)}"
         logging.error(f"[ERROR] generate_auction_insights failed: {error_msg}")
@@ -1178,3 +1176,4 @@ if page == "🤖 AI Analysis":
                 except Exception as e:
                     # Catch any remaining unexpected errors outside the core function
                     st.error(f"An unexpected error occurred: {str(e)}")
+

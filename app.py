@@ -31,22 +31,7 @@ except Exception:
 BACKEND_BASE_URL = os.getenv("BANK_AUCTION_INSIGHTS_API_URL", "http://localhost:8000")
 AUCTION_INSIGHTS_ENDPOINT = "/auction-insights"
 
-def get_auction_insights(payload: Dict[str, Any]) -> Optional[Dict[str, Any]]:
-    """Get AI insights from backend with proper error handling."""
-    try:
-        response = requests.post(
-            urljoin(BACKEND_BASE_URL, AUCTION_INSIGHTS_ENDPOINT),
-            json=payload,
-            timeout=60
-        )
-        response.raise_for_status()
-        return response.json()
-    except requests.exceptions.RequestException as e:
-        st.error(f"Backend connection error: {str(e)}")
-        return None
-    except json.JSONDecodeError:
-        st.error("Invalid response format from backend")
-        return None
+
     
 
 
@@ -101,22 +86,7 @@ page = st.sidebar.radio(
     index=0
 )
 
-def check_backend_connection() -> bool:
-    """Check if backend is reachable with retry logic."""
-    retries = 3
-    for attempt in range(retries):
-        try:
-            response = requests.get(
-                urljoin(BACKEND_BASE_URL, "/ping"),
-                timeout=5
-            )
-            if response.status_code == 200:
-                return True
-        except requests.exceptions.RequestException:
-            if attempt == retries - 1: 
-                return False
-            time.sleep(1)  
-    return False
+
 
 #####################################################################################################################################################################
 ########################################################################################################################################################################
@@ -206,68 +176,6 @@ def load_auction_data():
 
 
 
-def display_insights(insights: dict):
-    """Display the insights in a structured format."""
-    st.success(" Insights generated successfully!")
-    
-    # Main summary section
-    with st.expander("Auction Summary", expanded=True):
-        if 'corporate_debtor' in insights:
-            st.markdown(f"**Corporate Debtor:** {insights['corporate_debtor']}")
-        
-        if 'assets' in insights:
-            st.subheader("Assets Information")
-            col1, col2 = st.columns(2)
-            with col1:
-                if 'description' in insights['assets']:
-                    st.markdown(f"**Description:** {insights['assets']['description']}")
-            with col2:
-                if 'reserve_price' in insights['assets']:
-                    st.markdown(f"**Reserve Price:** {insights['assets']['reserve_price']}")
-    
-    # Financial terms section
-    if 'financial_terms' in insights:
-        with st.expander("💰 Financial Terms", expanded=False):
-            terms = insights['financial_terms']
-            if 'emd' in terms:
-                st.markdown(f"**EMD Amount:** {terms['emd']}")
-            if 'bid_increments' in terms and terms['bid_increments']:
-                st.markdown("**Bid Increments:**")
-                for increment in terms['bid_increments']:
-                    st.markdown(f"- {increment}")
-    
-    # Timeline section
-    if 'timeline' in insights:
-        with st.expander("⏰ Timeline", expanded=False):
-            timeline = insights['timeline']
-            if 'auction_date' in timeline:
-                st.markdown(f"**Auction Date:** {timeline['auction_date']}")
-            if 'inspection_period' in timeline:
-                st.markdown(f"**Inspection Period:** {timeline['inspection_period']}")
-    
-    # Validation section
-    if 'validation' in insights:
-        with st.expander("🔍 Data Validation", expanded=False):
-            validation = insights['validation']
-            if 'debtor_match' in validation:
-                st.markdown(f"**Debtor Match:** {'✅ Valid' if validation['debtor_match'] else '❌ Mismatch'}")
-            if 'discrepancies' in validation and validation['discrepancies']:
-                st.markdown("**Discrepancies Found:**")
-                for field, details in validation['discrepancies'].items():
-                    st.markdown(f"- {field}: Notice={details.get('notice_value', 'N/A')}, CSV={details.get('csv_value', 'N/A')}")
-
-connection_status = check_backend_connection()
-if connection_status:
-    st.sidebar.markdown(
-        '<div class="connection-status connection-success">✓ Backend Connected</div>',
-        unsafe_allow_html=True
-    )
-else:
-    st.sidebar.markdown(
-        '<div class="connection-status connection-error">✗ Backend Disconnected</div>',
-        unsafe_allow_html=True
-    )
-    st.sidebar.error(f"Ensure backend is running at: {BACKEND_BASE_URL}")
 
 
 #####################################################################################################################################################################
@@ -760,3 +668,534 @@ elif page == "📈 KPI Analytics" and df is not None:
 #####################################################################################################################################################################
 ########################################################################################################################################################################  
 
+# AI Analysis Page
+
+def display_insights(insights: dict):
+                st.markdown(f"- {ref}")
+
+# Load data
+df, latest_csv = load_auction_data()
+
+# Configure logging
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+)
+logger = logging.getLogger(__name__)
+
+# Load environment variables
+load_dotenv()
+
+
+# Text Processing Functions
+
+def is_pdf_scanned(pdf_bytes: bytes) -> bool:
+    """
+    Determine if a PDF is scanned by checking for the absence of text
+    and the presence of images.
+    """
+    try:
+        # Check for extractable text using pdfplumber
+        with pdfplumber.open(io.BytesIO(pdf_bytes)) as pdf:
+            has_text = any(page.extract_text() for page in pdf.pages)
+            if has_text:
+                return False  
+
+        doc = fitz.open(stream=pdf_bytes, filetype="pdf")
+        has_images = any(page.get_images(full=True) for page in doc)
+       
+        return has_images 
+    except Exception as e:
+        print(f"[ERROR] is_pdf_scanned failed: {e}")
+        return False 
+    
+def extract_json_from_text(text: str) -> dict:
+    """
+    Attempts to extract the first valid JSON object from a text string.
+    Returns an empty dict if extraction fails.
+    """
+    try:
+        # Match JSON object from first '{' to last '}'
+        match = re.search(r"{.*}", text, re.DOTALL)
+        if match:
+            return json.loads(match.group(0))
+    except Exception as e:
+        print(f"[ERROR] JSON extraction failed: {e}")
+    return {}
+   
+
+    return clean_assets(all_assets) 
+
+def extract_assets_from_text(text: str) -> list:
+    def is_valid_price(value: str) -> bool:
+        """Check if a string is a valid numeric price (not a date, year, or phone number)."""
+        if not re.search(r'\d', value):
+            return False
+        value_clean = value.replace(",", "").strip()
+        # Discard years
+        if value_clean.isdigit() and 1900 <= int(value_clean) <= 2100:
+            return False
+        # Discard very large numbers that look like phone numbers (>10 digits)
+        if value_clean.isdigit() and len(value_clean) > 10:
+            return False
+        # Discard very small numbers 
+        if value_clean.isdigit() and len(value_clean) < 2:
+            return False
+        return True
+
+    assets = []
+
+    # Try to find assets based on common keywords
+    asset_keywords = ["Land & Building", "RESIDENTIAL FLAT", "Plant & Machinery"]
+    descriptions_with_keywords = re.split(f'({"|".join(asset_keywords)})', text, flags=re.IGNORECASE)
+    descriptions_with_keywords = [d.strip() for d in descriptions_with_keywords if d.strip()]
+
+    # Merge keyword and description
+    asset_descriptions = []
+    for i in range(0, len(descriptions_with_keywords), 2):
+        if i + 1 < len(descriptions_with_keywords):
+            asset_descriptions.append(descriptions_with_keywords[i] + " " + descriptions_with_keywords[i + 1])
+        else:
+            asset_descriptions.append(descriptions_with_keywords[i])
+
+    # Extract price-like numbers
+    price_pattern = re.compile(r'[\d,]+\.\d{1,2}|[\d,]+')
+    all_prices = price_pattern.findall(text)
+    all_prices = [p.replace(",", "") for p in all_prices if is_valid_price(p)]
+
+    # Take only last 18 values if there are many
+    if len(all_prices) >= 18:
+        relevant_prices = all_prices[-18:]
+    else:
+        relevant_prices = all_prices
+
+    price_index = 0
+    for description in asset_descriptions:
+        current_asset = {
+            "block_name": "",
+            "asset_description": description.strip(),
+            "reserve_price": "",
+            "emd_amount": "",
+            "incremental_bid_amount": ""
+        }
+
+        # Set block name
+        if "Land & Building" in description:
+            current_asset["block_name"] = "Land & Building"
+        elif "RESIDENTIAL FLAT" in description:
+            current_asset["block_name"] = "RESIDENTIAL FLAT"
+        elif "Plant & Machinery" in description:
+            current_asset["block_name"] = "PLANT & MACHINERY"
+
+        # Assign only if next 3 prices are valid
+        if price_index + 3 <= len(relevant_prices):
+            group = relevant_prices[price_index:price_index + 3]
+            if all(is_valid_price(p) for p in group):
+                current_asset["reserve_price"], current_asset["emd_amount"], current_asset["incremental_bid_amount"] = group
+            price_index += 3
+
+        assets.append(current_asset)
+
+    return assets
+   
+def format_tables_as_markdown(tables: List[List[List[str]]]):
+    markdown = ""
+    for table in tables:
+        if not table or len(table) < 2:
+            continue
+        headers = [h.strip() if h else "" for h in table[0]]
+        markdown += "\n| " + " | ".join(headers) + " |\n"
+        markdown += "| " + " | ".join(["---"] * len(headers)) + " |\n"
+        for row in table[1:]:
+            row = [cell.strip().replace("\n", " ") if cell else "" for cell in row]
+            while len(row) < len(headers):
+                row.append("")
+            markdown += "| " + " | ".join(row) + " |\n"
+    return markdown
+
+def extract_tables_with_camelot(pdf_bytes: bytes, page_number: int = None) -> List[List[List[str]]]:
+    """
+    Extracts tables from a specific page of a PDF using Camelot.
+    Tries both 'lattice' and 'stream' flavors.
+    """
+    tables = []
+    page_str = "all" if page_number is None else str(page_number)
+   
+    try:
+        # Try 'lattice' for tables with clear lines
+        print(f"[INFO] Trying Camelot with 'lattice' flavor on page {page_str}...")
+        lattice_tables = camelot.read_pdf(io.BytesIO(pdf_bytes), pages=page_str, flavor='lattice')
+        if lattice_tables.n > 0:
+            tables.extend([table.data for table in lattice_tables])
+            print(f"[INFO] Found {lattice_tables.n} table(s) with 'lattice' flavor.")
+            return tables
+
+        # If that fails, try 'stream' for tables without clear lines
+        print(f"[INFO] 'lattice' failed, trying 'stream' flavor on page {page_str}...")
+        stream_tables = camelot.read_pdf(io.BytesIO(pdf_bytes), pages=page_str, flavor='stream')
+        if stream_tables.n > 0:
+            tables.extend([table.data for table in stream_tables])
+            print(f"[INFO] Found {stream_tables.n} table(s) with 'stream' flavor.")
+            return tables
+           
+    except Exception as e:
+        print(f"[ERROR] Camelot table extraction failed: {e}")
+       
+    return tables
+
+def ocr_pdf(pdf_bytes: io.BytesIO) -> Tuple[str, List]:
+    """
+    Runs OCR on all pages of a PDF and returns extracted text + empty table list.
+    """
+    ocr_text = ""
+    tables = []
+
+    try:
+        images = convert_from_bytes(pdf_bytes.getvalue())
+        for img in images:
+            text = pytesseract.image_to_string(img)
+            ocr_text += text.strip() + "\n"
+    except Exception as e:
+        print(f"[ERROR] OCR failed: {e}")
+
+    return ocr_text, tables
+
+
+def fetch_text_from_url(pdf_url: str) -> Tuple[str, List, bool]:
+    response = requests.get(pdf_url, timeout=15)
+    response.raise_for_status()
+    pdf_bytes = response.content
+    pdf_io = io.BytesIO(pdf_bytes)
+
+    raw_text = ""
+    tables = []
+    scanned_pdf = False
+
+    try:
+        with pdfplumber.open(pdf_io) as pdf:
+            for page in pdf.pages:
+                page_text = page.extract_text() or ""
+                raw_text += page_text.strip() + "\n"
+
+        # Checked if pdfplumber failed to extract text, and use OCR if so.
+        if not raw_text.strip():
+            print("[INFO] pdfplumber extracted no text. Falling back to OCR...")
+            scanned_pdf = True
+            raw_text, tables = ocr_pdf(pdf_io)
+       
+        # If no tables were found, use Camelot as a fallback.
+        if not tables and not scanned_pdf:
+            print("[INFO] pdfplumber did not find any tables. Trying Camelot on All Pages...")
+            tables = extract_tables_with_camelot(pdf_bytes)
+
+    except Exception as e:
+        print(f"[ERROR] PDF extraction failed: {e}")
+        # If pdfplumber fails entirely, we check if it's a scanned PDF
+        if is_pdf_scanned(pdf_bytes):
+            scanned_pdf = True
+            raw_text, tables = ocr_pdf(pdf_io)
+        else:
+            print("[INFO] PDF extraction failed but document is not scanned. No OCR fallback.")
+            raw_text = ""
+            tables = []
+
+    return raw_text.strip(), tables, scanned_pdf
+
+def truncate_text(text: str, max_words: int = 5000) -> str:
+    words = text.split()
+    return " ".join(words[:max_words]) if len(words) > max_words else text
+
+def clean_llm_output(output: str) -> str:
+    import re
+    match = re.search(r"{.*}", output, re.DOTALL)
+    return match.group(0) if match else output
+
+def normalize_keys(obj):
+    """Lowercase keys and replace spaces with underscores for consistency."""
+    if isinstance(obj, dict):
+        return {k.lower().replace(" ", "_"): normalize_keys(v) for k, v in obj.items()}
+    elif isinstance(obj, list):
+        return [normalize_keys(i) for i in obj]
+    else:
+        return obj
+
+def clean_assets(assets: list) -> list:
+    """
+    Cleans OCR noise from asset descriptions and formats numeric values.
+    """
+    cleaned_assets = []
+
+    for asset in assets:
+        cleaned_asset = asset.copy()
+
+        # 1. Clean asset description
+        desc = asset.get("asset_description", "")
+        desc = re.sub(r"http\S+|www\.\S+", "", desc)  # Remove URLs
+        desc = re.sub(r"\S+@\S+", "", desc)  # Remove email addresses
+        desc = re.sub(r"\s+", " ", desc)  # Remove multiple spaces/newlines
+        cleaned_asset["asset_description"] = desc.strip()
+
+        # 2. Clean numeric fields
+        for field in ["reserve_price", "emd_amount", "incremental_bid_amount"]:
+            value = asset.get(field, "")
+            if value:
+                # Keep only digits, commas, and decimal points
+                value_clean = re.sub(r"[^\d.,]", "", value)
+                value_clean = value_clean.replace(",", "")  # Remove commas for uniformity
+                cleaned_asset[field] = value_clean if value_clean else ""
+            else:
+                cleaned_asset[field] = ""
+
+        cleaned_assets.append(cleaned_asset)
+
+    return cleaned_assets
+
+class AuctionDetails(BaseModel):
+    name_of_corporate_debtor_pdf_: str = Field(..., alias="Name of Corporate Debtor (PDF)")
+    auction_notice_url: str = Field(..., alias="Auction Notice URL")
+    date_of_auction_pdf: Optional[str] = Field(None, alias="Date of Auction (PDF)")
+    unique_number: Optional[str] = Field(None, alias="Unique Number")
+    ip_registration_number: Optional[str] = Field(None, alias="IP Registration Number")
+    auction_platform: Optional[str] = Field(None, alias="Auction Platform")
+    details_url: Optional[str] = Field(None, alias="Details URL")
+   
+    borrower_name: Optional[str] = None
+   
+    class Config:
+        allow_population_by_field_name = True
+        extra = "ignore"  
+def generate_auction_insights(corporate_debtor: str, auction_notice_url: str, llm) -> dict:
+    try:
+        
+        raw_text, tables, scanned_pdf = fetch_text_from_url(auction_notice_url)
+
+        fallback_assets = extract_assets_from_text(raw_text)
+        use_fallback = not tables or len(tables[0]) <= 2
+
+        assets_for_prompt = None
+        markdown_table = ""
+        if use_fallback:
+            # Using logging.warning is better practice than print
+            logging.warning("[FALLBACK] Using extracted assets from text due to missing/bad table") 
+            assets_for_prompt = clean_assets(fallback_assets)
+        else:
+            markdown_table = format_tables_as_markdown(tables)
+
+        if not raw_text.strip():
+            return {"status": "error", "message": "No usable text found in auction notice."}
+
+        truncated_text = truncate_text(raw_text)
+
+        
+        assets_section = (
+            f"\nAssets (extracted via OCR fallback):\n{json.dumps(assets_for_prompt, indent=2)}"
+            if assets_for_prompt else markdown_table
+        )
+
+        
+        prompt = f"""
+You are an expert financial analyst specializing in Indian auction notices. Your primary role is to audit the listing quality and risk.
+
+Your job is to carefully extract key details from the below auction notice text.
+It may contain normal paragraphs, markdown tables, or pre-parsed OCR asset JSON. Read all content carefully.
+
+Corporate Debtor: {corporate_debtor}
+
+Auction Notice Text:
+{truncated_text}
+
+{assets_section}
+
+# RISK SCORING FRAMEWORK (Use this internally for scoring)
+
+## HIGH RISK (Block/Hold - Score 0-3)
+Assign this risk level if ANY of the following Critical Defects are present. If a High Risk item is found, the Legal Compliance Score MUST be in the 0-3 range.
+- **Statutory Defects:** Notice has legal defects (e.g., notice period shorter than mandated; missing authorized officer name/signature/seal).
+- **Critical Mismatch:** Key details (e.g., property size/reserve price) differ significantly between the official notice PDF and the listing data.
+- **Missing Core Docs:** Critical artifacts are missing (Sale Notice PDF, Valuation Report, Title documents).
+- **Expired Valuation:** The valuation report date is older than 6-12 months (stale valuation).
+- **Extreme Price Outlier:** Reserve price is an extreme outlier (e.g., > +50% or < -40% vs. comparable properties/norms).
+- **Known Litigation:** Known, unresolved litigation (lis pendens, stay order) is disclosed.
+- **Process Integrity:** Frequent re-schedules (>=3) without adequate cause, OR outcome anomalies (postings contradict terms).
+
+## AVERAGE RISK (Warn Users - Score 4-7)
+Assign this risk level if NO High Risk items are present, but ANY of the following Moderate Defects are found. The Legal Compliance Score MUST be in the 4-7 range.
+- **Ambiguity:** Property description is ambiguous or inconsistent across documents.
+- **Missing Minor Annexures:** Minor supporting documents (e.g., uncertified translations) are missing.
+- **Low Quality:** Low photo count (<=3 .photos) or poor readability of scanned documents.
+- **Mild Price Outlier:** Reserve price is a mild outlier (e.g., 10-25% out of band).
+- **Short EMD Window:** Tight gap between notice and EMD close date.
+- **Multiple Re-Auctions:** Listing mentions multiple prior re-auctions with ad-hoc reserve changes (no method cited).
+- **Non-Standard Contact:** Personal emails/phones used in notices instead of official domains.
+
+## LOW / NO RISK (Informational - Score 8-10)
+Assign this risk level if NO High Risk or Average Risk items are found. The Legal Compliance Score MUST be in the 8-10 range.
+- **Minor Typos:** Only minor typos/formatting errors that don't change legal meaning.
+- **Normal Dynamics:** Events like last-minute bidding or re-auction due to reserve not met (1-2 cycles).
+
+---
+
+Please extract the following insights and return them as a structured JSON:
+
+1. Extract all general details (e.g. dates, contacts, platform link, etc.) exactly as written — do not infer or modify them.
+2. Use the provided markdown table or OCR asset JSON (whichever is present) to populate the `"Assets"` list.
+3. One row = one asset. Do not duplicate or infer missing rows.
+4. If values are missing, leave them blank — do not guess.
+5. Find the exact 'Reserve Price', 'EMD Amount', and 'Incremental Bid Amount' from the provided raw text, paying close attention to their proximity to these keywords. The Assets table should be a final cross-reference.
+
+Additional Task:
+Rank the Auction using the provided **RISK SCORING FRAMEWORK** and the three components:
+- Legal Compliance (Score 0-10, based on the Framework)
+- Economical Point of View (Score 0-10, based on asset value and market context)
+- Market Trends (Score 0-10, based on timing and location factors)
+
+Provide:
+- Individual scores for each component (0–10).
+- A final score (simple average of the three components).
+- A single-line summary of risk: "High Risk", "Average Risk", or "Low/No Risk" based on the highest risk category found.
+- A **Reference Summary** that consists of **exactly 8 bullet points** in the JSON array. This summary must be a **detailed, evidence-based audit report** that uses plain, easy-to-understand language. **For every point, you MUST include the specific data/text from the notice that justifies the conclusion, and explicitly state the legal or market standard where applicable.**
+
+    1. **Primary Risk & Evidence:** State the assigned risk level and the single most critical issue found. **DO NOT copy text from other points.** (Example: 'AVERAGE RISK: The contact email "anilgoel@aaainsolvency.com" is non-standard.')
+    2. **Justification of Primary Risk:** Explain the risk. (Example: This email uses a non-institutional domain, raising a minor integrity concern over accountability.)
+    3. **Statutory Compliance Check:** Report on legal defects by **citing the legal standard and the full period**. (Example: Statutory defects were cleared. The 21-day notice period rule is met, as the period from [Notice Date] to [Auction Date] is compliant.)
+    4. **Authorization/Evidence Check:** Report on authorization and evidence by citing the document/reference. (Example: Valid authorization evidence is present, citing the NCLT order/Resolution reference from the text, ensuring the sale is legally sound.)
+    5. **Artifacts Check:** Report on critical and minor documents. (Example: All critical documents are present. Minor annexures (like uncertified translations) are missing, which is an Average Risk.)
+    6. **Valuation Check:** Report on price outlier and valuation currency. (Example: The Reserve Price of [Price] is acceptable based on market norms. The valuation report date of [Valuation Date] is current and not expired, meeting the 6-12 month policy window.)
+    7. **Process/Timeline Check:** Report on EMD window/re-auctions. (Example: The EMD window from [Notice Date] to [EMD Date] is adequate. No signs of multiple re-auctions or ad-hoc reserve changes were noted.)
+    8. **Listing Quality Warning:** Report on photos/description/ambiguity. (Example: Listing quality is low. Property photos and detailed descriptions require significant improvement for better transparency.)
+
+Return the result in this **exact JSON format**:
+
+{{
+    "Corporate Debtor": "...",
+    "Auction Date": "...",
+    "Auction Time": "...",
+    "Last Date for EMD Submission": "...",
+    "Inspection Date": "...",
+    "Inspection Time": "...",
+    "Property Description": "...",
+    "Auction Platform": "...",
+    "Contact Email": "...",
+    "Contact Mobile": "...",
+    "Assets": [
+        {{
+            "Block Name": "...",
+            "Asset Description": "...",
+            "Auction Time": "...",
+            "Reserve Price": "...",
+            "EMD Amount": "...",
+            "Incremental Bid Amount": "..."
+        }}
+    ],
+    "Ranking": {{
+        "Legal Compliance Score": 0,
+        "Economical Score": 0,
+        "Market Trends Score": 0,
+        "Final Score": 0,
+        "Risk Summary": "...",
+        "Reference Summary": [
+            "...",
+            "...",
+            "...",
+            "...",
+            "...",
+            "...",
+            "...",
+            "..."
+        ]
+    }}
+}}
+"""
+    
+        logging.info(f"[INFO] Prompt length: {len(prompt.split())} words")
+
+        response = llm.invoke(prompt, max_tokens=2048, temperature=0.2, top_p=0.9)
+        logging.info(f"[INFO] Raw LLM response: {response.content[:500]} ...") 
+
+        parsed = extract_json_from_text(response.content)
+        normalized = normalize_keys(parsed)
+
+        return {
+            "status": "success",
+            "scanned_pdf": scanned_pdf,
+            "insights": normalized
+        }
+
+    # FIX: Ensure this 'except' block is aligned exactly with the 'try' block above it.
+    except Exception as e: 
+        # 🔑 DEBUGGING CHANGE: Capture the exact exception message and return it.
+        error_msg = f"An error occurred during insight generation: {str(e)}"
+        logging.error(f"[ERROR] generate_auction_insights failed: {error_msg}")
+        return {"status": "error", "message": error_msg}
+
+if page == "🤖 AI Analysis":
+    st.markdown('<div class="main-header">🤖 AI Analysis</div>', unsafe_allow_html=True)
+
+    if df is None:
+        st.error("No auction data loaded")
+        st.stop()
+
+    # Clean and standardize column names for safety
+    df.columns = df.columns.str.strip().str.lower().str.replace(r"[^\w]+", "_", regex=True)
+
+    # Use CIN/LLPIN column as Auction ID selector
+    if 'auction_id' not in df.columns:
+        st.error("Column 'Auction ID' (auction_id) not found in the uploaded data.")
+        st.stop()
+
+    auction_ids = df['auction_id'].dropna().unique()
+    selected_id = st.selectbox("Select Auction ID (from CIN/LLPIN)", options=[""] + list(auction_ids))
+
+    if selected_id:
+        selected_row = df[df['auction_id'] == selected_id]
+        if selected_row.empty:
+            st.warning("Selected Auction ID not found in the data.")
+            st.stop()
+
+        auction_data = selected_row.iloc[0].to_dict()
+
+        # Use the actual cleaned column names
+        corporate_debtor = auction_data.get('bank', '')
+        auction_notice_url = auction_data.get('notice_url', '')
+
+        if not corporate_debtor or not auction_notice_url:
+            st.warning("Corporate Debtor name or Auction Notice URL missing for selected Auction ID.")
+            st.stop()
+
+        @st.cache_resource
+        def initialize_llm():
+            groq_api_key = st.secrets["GROQ_API_KEY"]
+            # NOTE: Consider changing model to 'mixtral-8x7b-32768' as it's a common high-quality Groq model
+            # that is often more reliable than the deepseek model.
+            return ChatGroq(
+                model="deepseek-r1-distill-llama-70b",
+                temperature=0,
+                api_key=groq_api_key,
+            )
+
+        llm = initialize_llm()
+
+        if st.button("Generate Insights", use_container_width=True):
+            if not llm:
+                st.error("LLM failed to initialize. Check your GROQ_API_KEY secret in Streamlit Cloud.")
+                st.stop()
+
+            with st.spinner("Generating insights (This may take up to 30 seconds for PDF processing and LLM analysis)..."):
+                try:
+                    insights_result = generate_auction_insights(corporate_debtor, auction_notice_url, llm)
+
+                    if insights_result["status"] == "success":
+                        insight_data = insights_result["insights"]
+                        if isinstance(insight_data, dict):
+                            # Assuming display_insights is defined earlier and correct
+                            display_insights(insight_data)
+                        else:
+                            st.markdown(insight_data)
+                    else:
+                        # 🔑 DEBUGGING CHANGE: Display the full error trace from the 'message' field
+                        st.error("Analysis Failed")
+                        st.exception(Exception(insights_result["message"]))
+                        
+                except Exception as e:
+                    # Catch any remaining unexpected errors outside the core function
+                    st.error(f"An unexpected error occurred: {str(e)}")

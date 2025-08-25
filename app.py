@@ -164,6 +164,7 @@ def load_auction_data():
       
 
         if df['EMD Submission Date'].isna().any():
+            pass
             #st.warning("⚠️ Some EMD Submission Dates could not be parsed and are set to NaT. These rows may have invalid data.")
 
         return df, csv_path
@@ -1199,3 +1200,4 @@ if page == "🤖 AI Analysis":
                 except Exception as e:
                     # Catch any remaining unexpected errors outside the core function
                     st.error(f"An unexpected error occurred: {str(e)}")
+

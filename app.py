@@ -16,7 +16,23 @@ import time
 from typing import Dict, Any, Optional, List
 import json
 from urllib.parse import urljoin
-
+import os
+import fitz # PyMuPDF
+import pytesseract
+from PIL import Image
+from langchain_groq import ChatGroq
+from dotenv import load_dotenv
+from typing import Optional, List, Tuple, Dict, Any
+import logging
+from io import BytesIO
+import requests
+import re
+import json
+from pydantic import BaseModel, Field
+import pdfplumber
+import camelot
+from pdf2image import convert_from_bytes
+import io
 
 
 # Try optional AI deps (app continues even if missing)
@@ -1200,4 +1216,5 @@ if page == "🤖 AI Analysis":
                 except Exception as e:
                     # Catch any remaining unexpected errors outside the core function
                     st.error(f"An unexpected error occurred: {str(e)}")
+
 

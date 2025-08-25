@@ -210,7 +210,7 @@ df, latest_csv = load_auction_data()
 # Dashboard Page
 if page == "🏠 Dashboard" and df is not None:
     st.markdown('<div class="main-header">🏛️ Auction Portal India</div>', unsafe_allow_html=True)
-    st.markdown(f"**Last Updated:** {latest_csv.split('_')[-1].split('.')[0] if latest_csv else 'Unknown'}")
+    #st.markdown(f"**Last Updated:** {latest_csv.split('_')[-1].split('.')[0] if latest_csv else 'Unknown'}")
 
 
     # Summary metrics
@@ -281,7 +281,7 @@ if page == "🏠 Dashboard" and df is not None:
 # Search Analytics Page
 elif page == "🔍 Search Analytics" and df is not None:
     st.markdown('<div class="main-header">🔍 Search Analytics</div>', unsafe_allow_html=True)
-    st.markdown(f"**Last Updated:** {latest_csv.split('_')[-1].split('.')[0] if latest_csv else 'Unknown'}")
+    #st.markdown(f"**Last Updated:** {latest_csv.split('_')[-1].split('.')[0] if latest_csv else 'Unknown'}")
     
 
     invalid_count = df['EMD Submission Date'].isna().sum()
@@ -1216,6 +1216,7 @@ if page == "🤖 AI Analysis":
                 except Exception as e:
                     # Catch any remaining unexpected errors outside the core function
                     st.error(f"An unexpected error occurred: {str(e)}")
+
 
 
 

@@ -95,10 +95,12 @@ page = st.sidebar.radio(
 
 @st.cache_data
 def load_auction_data():
-    csv_path = r"C:\Users\Amit Sharma\ai-platform\frontend\auction_exports\combined_auctions_20250819_154419.csv"
+    # Instead of hardcoding a Windows path, point to the repo folder
+    csv_path = "auction_exports"  
+    
     try:
-        # Get list of CSV files
-        csv_files = glob.glob("auction_exports/combined_auctions_*.csv")
+        # Get list of CSV files in auction_exports
+        csv_files = glob.glob(os.path.join(csv_path, "combined_auctions_*.csv"))
        
         if not csv_files:
             st.error("❌ No CSV files found in auction_exports folder.")
@@ -107,7 +109,6 @@ def load_auction_data():
         # Pick the latest file by modification time
         latest_file = max(csv_files, key=os.path.getmtime)
         df = pd.read_csv(latest_file)
-
        
         # Rename columns for clarity
         df = df.rename(columns={
@@ -947,3 +948,4 @@ if page == "🤖 AI Analysis":
                         st.error("Could not fetch insights.")
                 except Exception as e:
                     st.error(f"An error occurred: {str(e)}")
+

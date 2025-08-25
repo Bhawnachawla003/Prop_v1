@@ -194,7 +194,7 @@ def load_auction_data():
       
 
         if df['EMD Submission Date'].isna().any():
-            st.warning("⚠️ Some EMD Submission Dates could not be parsed and are set to NaT. These rows may have invalid data.")
+            #st.warning("⚠️ Some EMD Submission Dates could not be parsed and are set to NaT. These rows may have invalid data.")
 
         return df, csv_path
     except Exception as e:
@@ -759,3 +759,4 @@ elif page == "📈 KPI Analytics" and df is not None:
 
 #####################################################################################################################################################################
 ########################################################################################################################################################################  
+

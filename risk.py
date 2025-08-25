@@ -1141,7 +1141,7 @@ if page == "🤖 AI Analysis":
 
         @st.cache_resource
         def initialize_llm():
-            groq_api_key = os.getenv("GROQ_API_KEY")
+            groq_api_key = st.secrets["GROQ_API_KEY"]
             # NOTE: Consider changing model to 'mixtral-8x7b-32768' as it's a common high-quality Groq model
             # that is often more reliable than the deepseek model.
             return ChatGroq(
@@ -1176,4 +1176,5 @@ if page == "🤖 AI Analysis":
                 except Exception as e:
                     # Catch any remaining unexpected errors outside the core function
                     st.error(f"An unexpected error occurred: {str(e)}")
+
 

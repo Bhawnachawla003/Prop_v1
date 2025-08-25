@@ -682,6 +682,64 @@ elif page == "📈 KPI Analytics" and df is not None:
 # AI Analysis Page
 
 def display_insights(insights: dict):
+    """Display auction insights in Streamlit directly, without expanders."""
+    st.success("Insights generated successfully!")
+
+    # Summary section
+    st.markdown("### Auction Summary")
+    st.markdown(f"**Corporate Debtor:** {insights.get('corporate_debtor', '')}")
+    st.markdown(f"**Auction Date:** {insights.get('auction_date', '')}")
+    st.markdown(f"**Auction Time:** {insights.get('auction_time', '')}")
+    st.markdown(f"**Inspection Date:** {insights.get('inspection_date', '')}")
+    st.markdown(f"**Inspection Time:** {insights.get('inspection_time', '')}")
+    st.markdown(f"**Auction Platform:** {insights.get('auction_platform', '')}")
+    st.markdown(f"**Contact Email:** {insights.get('contact_email', '')}")
+    st.markdown(f"**Contact Mobile:** {insights.get('contact_mobile', '')}")
+
+    # Assets
+    assets = insights.get("assets", [])
+    if assets:
+        st.markdown("### Assets Information")
+        for asset in assets:
+            st.markdown(f"**Block Name:** {asset.get('block_name', '')}")
+            st.markdown(f"**Description:** {asset.get('asset_description', '')}")
+            st.markdown(f"**Auction Time:** {asset.get('auction_time', '')}")
+            st.markdown(f"**Reserve Price:** {asset.get('reserve_price', '')}")
+            st.markdown(f"**EMD Amount:** {asset.get('emd_amount', '')}")
+            st.markdown(f"**Incremental Bid Amount:** {asset.get('incremental_bid_amount', '')}")
+            st.markdown("---")
+
+    # Financial Terms
+    financial = insights.get("financial_terms", {})
+    if financial:
+        st.markdown("### Financial Terms")
+        st.markdown(f"**EMD Amount:** {financial.get('emd', '')}")
+        bid_increments = financial.get("bid_increments", [])
+        if bid_increments:
+            st.markdown("**Bid Increments:**")
+            for inc in bid_increments:
+                st.markdown(f"- {inc}")
+
+    # Timeline
+    timeline = insights.get("timeline", {})
+    if timeline:
+        st.markdown("### Timeline")
+        st.markdown(f"**Auction Date:** {timeline.get('auction_date', '')}")
+        st.markdown(f"**Inspection Period:** {timeline.get('inspection_period', '')}")
+
+    # Ranking
+    ranking = insights.get("ranking", {})
+    if ranking:
+        st.markdown("### Auction Ranking")
+        st.markdown(f"**Legal Compliance Score:** {ranking.get('legal_compliance_score', 0)}")
+        st.markdown(f"**Economical Score:** {ranking.get('economical_score', 0)}")
+        st.markdown(f"**Market Trends Score:** {ranking.get('market_trends_score', 0)}")
+        st.markdown(f"**Final Score:** {ranking.get('final_score', 0)}")
+        st.markdown(f"**Risk Summary:** {ranking.get('risk_summary', '')}")
+        references = ranking.get("reference_summary", [])
+        if references:
+            st.markdown("**Reference Summary:**")
+            for ref in references:
                 st.markdown(f"- {ref}")
 
 # Load data
@@ -855,21 +913,21 @@ def extract_tables_with_camelot(pdf_bytes: bytes, page_number: int = None) -> Li
     return tables
 
 def ocr_pdf(pdf_bytes: io.BytesIO) -> Tuple[str, List]:
-    """
-    Runs OCR on all pages of a PDF and returns extracted text + empty table list.
-    """
     ocr_text = ""
     tables = []
-
     try:
-        images = convert_from_bytes(pdf_bytes.getvalue())
-        for img in images:
-            text = pytesseract.image_to_string(img)
-            ocr_text += text.strip() + "\n"
+        url = "https://api.ocr.space/parse/image"
+        payload = {"apikey": st.secrets("OCR_SPACE_API_KEY"), "language": "eng"}
+        files = {"file": ("file.pdf", pdf_bytes.getvalue())}
+        response = requests.post(url, data=payload, files=files)
+        result = response.json()
+        if "ParsedResults" in result:
+            ocr_text = result["ParsedResults"][0]["ParsedText"]
     except Exception as e:
         print(f"[ERROR] OCR failed: {e}")
 
-    return ocr_text, tables
+    return ocr_text.strip(), tables
+
 
 
 def fetch_text_from_url(pdf_url: str) -> Tuple[str, List, bool]:
@@ -1210,9 +1268,5 @@ if page == "🤖 AI Analysis":
                 except Exception as e:
                     # Catch any remaining unexpected errors outside the core function
                     st.error(f"An unexpected error occurred: {str(e)}")
-
-
-
-
 
 

@@ -16,5 +16,8 @@ python-docx
 python-docx
 PyPDF2
 babel
+numpy
+pandas
+
 
 

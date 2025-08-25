@@ -284,13 +284,7 @@ elif page == "🔍 Search Analytics" and df is not None:
     #st.markdown(f"**Last Updated:** {latest_csv.split('_')[-1].split('.')[0] if latest_csv else 'Unknown'}")
     
 
-    invalid_count = df['EMD Submission Date'].isna().sum()
-    st.markdown(f"""
-        <div class="metric-tile">
-            <h3>{invalid_count}</h3>
-            <p>Invalid EMD Submission Dates</p>
-        </div>
-    """, unsafe_allow_html=True)
+   
 
     filtered_df = df[df['days_until_submission'] >= 0].copy()
     
@@ -1216,6 +1210,7 @@ if page == "🤖 AI Analysis":
                 except Exception as e:
                     # Catch any remaining unexpected errors outside the core function
                     st.error(f"An unexpected error occurred: {str(e)}")
+
 
 
 

@@ -121,7 +121,7 @@ def load_auction_data():
         # Pick the latest file by modification time
         latest_file = max(csv_files, key=os.path.getmtime)
         df = pd.read_csv(latest_file)
-        st.success(f"✅ Loaded data from {latest_file} with {len(df)} records.")
+        #st.success(f"✅ Loaded data from {latest_file} with {len(df)} records.")
         
         
         
@@ -1216,5 +1216,6 @@ if page == "🤖 AI Analysis":
                 except Exception as e:
                     # Catch any remaining unexpected errors outside the core function
                     st.error(f"An unexpected error occurred: {str(e)}")
+
 
 

@@ -1189,9 +1189,13 @@ if page == "🤖 AI Analysis":
         st.error("Column 'Auction ID' (auction_id) not found in the uploaded data.")
         st.stop()
 
-    auction_ids = df['auction_id'].dropna().unique()
-    selected_id = st.selectbox("Select Auction ID (from CIN/LLPIN)", options=[""] + list(auction_ids))
+    # Filter out rows with invalid or placeholder URLs
+    df_filtered = df[~df['notice_url'].str.contains('URL 2_if available', case=False, na=False)]
 
+    # Populate the selectbox with the filtered data
+    auction_ids = df_filtered['auction_id'].dropna().unique()
+    selected_id = st.selectbox("Select Auction ID (from CIN/LLPIN)", options=[""] + list(auction_ids))
+    
     if selected_id:
         selected_row = df[df['auction_id'] == selected_id]
         if selected_row.empty:
@@ -1245,6 +1249,7 @@ if page == "🤖 AI Analysis":
                 except Exception as e:
                     # Catch any remaining unexpected errors outside the core function
                     st.error(f"An unexpected error occurred: {str(e)}")
+
 
 
 

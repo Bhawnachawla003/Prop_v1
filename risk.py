@@ -984,13 +984,7 @@ def clean_assets(assets: list) -> list:
         # 2. Clean numeric fields
         for field in ["reserve_price", "emd_amount", "incremental_bid_amount"]:
             value = asset.get(field, "")
-            if value:
-                # Keep only digits, commas, and decimal points
-                value_clean = re.sub(r"[^\d.,]", "", value)
-                value_clean = value_clean.replace(",", "")  # Remove commas for uniformity
-                cleaned_asset[field] = value_clean if value_clean else ""
-            else:
-                cleaned_asset[field] = ""
+            cleaned_asset[field] = value.strip()
 
         cleaned_assets.append(cleaned_asset)
 
@@ -1087,7 +1081,7 @@ Please extract the following insights and return them as a structured JSON:
 2. Use the provided markdown table or OCR asset JSON (whichever is present) to populate the `"Assets"` list.
 3. One row = one asset. Do not duplicate or infer missing rows.
 4. If values are missing, leave them blank — do not guess.
-5. Find the exact 'Reserve Price', 'EMD Amount', and 'Incremental Bid Amount' from the provided raw text, paying close attention to their proximity to these keywords. The Assets table should be a final cross-reference.
+5. Find the exact 'Reserve Price', 'EMD Amount', and 'Incremental Bid Amount' from the provided raw text, paying close attention to their proximity to these keywords. The Assets table should be a final cross-reference. For these three fields, you MUST include the value and its unit (e.g., '20.61 Crore', '1.00 Crore', '1,00,000 Rs.') in a single string.
 
 Additional Task:
 Rank the Auction using the provided **RISK SCORING FRAMEWORK** and the three components:
@@ -1245,6 +1239,7 @@ if page == "🤖 AI Analysis":
                 except Exception as e:
                     # Catch any remaining unexpected errors outside the core function
                     st.error(f"An unexpected error occurred: {str(e)}")
+
 
 
 

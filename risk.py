@@ -819,8 +819,14 @@ def extract_tables_with_camelot(pdf_bytes: bytes, page_number: int = None) -> Li
        
     return tables
 
-# Initialize EasyOCR reader once
-reader = easyocr.Reader(['en'], gpu=False)
+@st.cache_resource
+def load_easyocr_model():
+    # This function will only run once
+    reader = easyocr.Reader(['en'], gpu=False)
+    return reader
+
+reader = load_easyocr_model()
+
 
 def is_text_sufficient(text: str, min_chars: int = 200, alpha_ratio: float = 0.40) -> bool:
     """
@@ -1239,6 +1245,7 @@ if page == "🤖 AI Analysis":
                 except Exception as e:
                     # Catch any remaining unexpected errors outside the core function
                     st.error(f"An unexpected error occurred: {str(e)}")
+
 
 
 

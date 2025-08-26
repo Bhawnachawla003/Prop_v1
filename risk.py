@@ -9,7 +9,6 @@ from docx import Document
 from PyPDF2 import PdfReader
 import datetime as dt
 import os
-import easyocr
 from dotenv import load_dotenv
 import glob
 import time
@@ -1174,6 +1173,7 @@ if page == "🤖 AI Analysis":
                 except Exception as e:
                     # Catch any remaining unexpected errors outside the core function
                     st.error(f"An unexpected error occurred: {str(e)}")
+
 
 
 

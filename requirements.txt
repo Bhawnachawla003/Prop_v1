@@ -17,6 +17,8 @@ PyPDF2
 babel
 numpy
 pandas
+pytesseract
+
 
 
 

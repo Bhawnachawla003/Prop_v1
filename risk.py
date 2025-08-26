@@ -5,11 +5,11 @@ import plotly.graph_objects as go
 from plotly.subplots import make_subplots
 import numpy as np
 import requests
-import io
 from docx import Document
 from PyPDF2 import PdfReader
 import datetime as dt
 import os
+import easyocr
 from dotenv import load_dotenv
 import glob
 import time
@@ -25,7 +25,6 @@ from dotenv import load_dotenv
 from typing import Optional, List, Tuple, Dict, Any
 import logging
 from io import BytesIO
-import requests
 import re
 import json
 from pydantic import BaseModel, Field
@@ -820,21 +819,22 @@ def extract_tables_with_camelot(pdf_bytes: bytes, page_number: int = None) -> Li
        
     return tables
 
+# Load EasyOCR reader once (not inside the function, avoids reloading on every call)
+reader = easyocr.Reader(['en'], gpu=False)
+
 def ocr_pdf(pdf_bytes: io.BytesIO) -> Tuple[str, List]:
+    """
+    OCR for scanned PDFs using EasyOCR (works on Streamlit Cloud).
+    """
     ocr_text = ""
-    tables = []
+    tables: List = []
     try:
-        url = "https://api.ocr.space/parse/image"
-        payload = {"apikey": st.secrets["OCR_SPACE_API_KEY"], "language": "eng"}
-        files = {"file": ("file.pdf", pdf_bytes.getvalue())}
-
-        response = requests.post(url, data=payload, files=files)
-        result = response.json()
-
-        print("[DEBUG] OCR API response:", json.dumps(result, indent=2))
-
-        if "ParsedResults" in result:
-            ocr_text = result["ParsedResults"][0].get("ParsedText", "")
+        # Convert PDF pages into images
+        images = convert_from_bytes(pdf_bytes.getvalue())
+        for img in images:
+            img_np = np.array(img)  # convert PIL -> numpy array
+            results = reader.readtext(img_np, detail=0)  # returns list of strings
+            ocr_text += " ".join(results) + "\n"
     except Exception as e:
         print(f"[ERROR] OCR failed: {e}")
 
@@ -1181,6 +1181,7 @@ if page == "🤖 AI Analysis":
                 except Exception as e:
                     # Catch any remaining unexpected errors outside the core function
                     st.error(f"An unexpected error occurred: {str(e)}")
+
 
 
 

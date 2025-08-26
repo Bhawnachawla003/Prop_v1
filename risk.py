@@ -18,7 +18,7 @@ from urllib.parse import urljoin
 import os
 import fitz # PyMuPDF
 import pytesseract
-from PIL import Image
+from PIL import Image, ImageOps
 from langchain_groq import ChatGroq
 from dotenv import load_dotenv
 from typing import Optional, List, Tuple, Dict, Any
@@ -822,35 +822,87 @@ def extract_tables_with_camelot(pdf_bytes: bytes, page_number: int = None) -> Li
 # Initialize EasyOCR reader once
 reader = easyocr.Reader(['en'], gpu=False)
 
+def is_text_sufficient(text: str, min_chars: int = 200, alpha_ratio: float = 0.40) -> bool:
+    """
+    Heuristic to decide whether text extracted by pdfplumber is 'good enough'
+    or we should fallback to OCR.
+    """
+    if not text or len(text.strip()) < min_chars:
+        return False
+    total = len(text)
+    alpha = sum(1 for c in text if c.isalpha())
+    # fraction of alphabetic chars
+    if (alpha / total) < alpha_ratio:
+        return False
+    words = text.split()
+    if not words or (sum(len(w) for w in words) / len(words)) < 2.5:
+        return False
+    return True
+
+def preprocess_pil_image_for_ocr(pil_img: Image.Image) -> np.ndarray:
+    """
+    Light-weight preprocessing using PIL:
+    - convert to grayscale
+    - autocontrast
+    - simple binarization using mean as threshold
+    Returns numpy array suitable for EasyOCR.
+    """
+    pil_gray = pil_img.convert("L")
+    pil_gray = ImageOps.autocontrast(pil_gray, cutoff=1)
+    arr = np.array(pil_gray)
+
+    # simple binarization (robust enough for many scanned docs)
+    thr = arr.mean()
+    bin_arr = (arr > thr).astype(np.uint8) * 255
+
+    return bin_arr
+
 def ocr_pdf(pdf_bytes: io.BytesIO) -> Tuple[str, List]:
     """
-    Runs OCR on all pages of a PDF using PyMuPDF + EasyOCR.
-    Returns extracted text + empty table list.
+    Render pages at higher DPI and run EasyOCR with light preprocessing.
+    Returns extracted text + tables (tables left empty here).
     """
     ocr_text = ""
     tables = []
 
     try:
         doc = fitz.open(stream=pdf_bytes.getvalue(), filetype="pdf")
-        for page in doc:
-            pix = page.get_pixmap()
-            img = Image.frombytes("RGB", [pix.width, pix.height], pix.samples)
+        zoom = 300 / 72  # render at ~300 DPI
+        mat = fitz.Matrix(zoom, zoom)
 
-            # Convert to numpy for EasyOCR
-            img_np = np.array(img)
+        for pageno, page in enumerate(doc, start=1):
+            # render with alpha disabled to avoid 4-channel images
+            pix = page.get_pixmap(matrix=mat, alpha=False)
 
-            # Run OCR
-            results = reader.readtext(img_np, detail=0, paragraph=True)
-            page_text = " ".join(results)
-            ocr_text += page_text.strip() + "\n"
+            # Robust conversion to PIL
+            img = Image.frombytes("RGB", (pix.width, pix.height), pix.samples)
+
+            # Preprocess and run OCR
+            img_for_ocr = preprocess_pil_image_for_ocr(img)
+            # reader is global EasyOCR reader: returns list of strings when detail=0
+            try:
+                results = reader.readtext(img_for_ocr, detail=0, paragraph=True)
+            except Exception as re:
+                logging.error(f"[ERROR] EasyOCR failure on page {pageno}: {re}")
+                results = []
+
+            page_text = " ".join(results).strip()
+            logging.info(f"[OCR] Page {pageno} extracted {len(page_text)} chars; first100: {page_text[:200]!r}")
+            ocr_text += page_text + "\n"
 
     except Exception as e:
-        print(f"[ERROR] OCR failed: {e}")
+        logging.error(f"[ERROR] OCR pipeline failed: {e}")
 
     return ocr_text.strip(), tables
 
+
 def fetch_text_from_url(pdf_url: str) -> Tuple[str, List, bool]:
-    response = requests.get(pdf_url, timeout=15)
+    """
+    Try pdfplumber first. If pdfplumber output is empty or 'insufficient'
+    fall back to rendered OCR (high-DPI).
+    Returns (raw_text, tables, scanned_pdf_flag)
+    """
+    response = requests.get(pdf_url, timeout=20)
     response.raise_for_status()
     pdf_bytes = response.content
     pdf_io = io.BytesIO(pdf_bytes)
@@ -861,29 +913,35 @@ def fetch_text_from_url(pdf_url: str) -> Tuple[str, List, bool]:
 
     try:
         with pdfplumber.open(pdf_io) as pdf:
-            for page in pdf.pages:
+            for i, page in enumerate(pdf.pages, start=1):
                 page_text = page.extract_text() or ""
                 raw_text += page_text.strip() + "\n"
 
-        # Checked if pdfplumber failed to extract text, and use OCR if so.
-        if not raw_text.strip():
-            print("[INFO] pdfplumber extracted no text. Falling back to OCR...")
+        # DEBUG: log a snippet so you can inspect why fallback may happen
+        logging.info(f"[PDFPLUMBER] Extracted total chars: {len(raw_text)}; sample: {raw_text[:400]!r}")
+
+        # Use heuristic to decide whether pdfplumber text is usable
+        if not is_text_sufficient(raw_text):
+            logging.info("[INFO] pdfplumber text insufficient — falling back to OCR")
             scanned_pdf = True
-            raw_text, tables = ocr_pdf(pdf_io)
-       
-        # If no tables were found, use Camelot as a fallback.
+            raw_text, tables = ocr_pdf(io.BytesIO(pdf_bytes))
+
+        # If pdfplumber found no tables, try optional Camelot only if needed
         if not tables and not scanned_pdf:
-            print("[INFO] pdfplumber did not find any tables. Trying Camelot on All Pages...")
-            tables = extract_tables_with_camelot(pdf_bytes)
+            try:
+                tables = extract_tables_with_camelot(pdf_bytes)
+            except Exception as e:
+                logging.warning(f"[WARN] Camelot extraction failed or not available: {e}")
+                tables = []
 
     except Exception as e:
-        print(f"[ERROR] PDF extraction failed: {e}")
-        # If pdfplumber fails entirely, we check if it's a scanned PDF
+        logging.error(f"[ERROR] PDF extraction failed: {e}")
+        # If pdfplumber fails entirely, check via image heuristics and run OCR
         if is_pdf_scanned(pdf_bytes):
             scanned_pdf = True
-            raw_text, tables = ocr_pdf(pdf_io)
+            raw_text, tables = ocr_pdf(io.BytesIO(pdf_bytes))
         else:
-            print("[INFO] PDF extraction failed but document is not scanned. No OCR fallback.")
+            logging.info("[INFO] pdfplumber failed and document not flagged as scanned. returning empty results.")
             raw_text = ""
             tables = []
 
@@ -1187,6 +1245,7 @@ if page == "🤖 AI Analysis":
                 except Exception as e:
                     # Catch any remaining unexpected errors outside the core function
                     st.error(f"An unexpected error occurred: {str(e)}")
+
 
 
 

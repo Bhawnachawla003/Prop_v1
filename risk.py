@@ -31,6 +31,7 @@ import pdfplumber
 import camelot
 from pdf2image import convert_from_bytes
 import io
+import easyocr
 
 
 # Try optional AI deps (app continues even if missing)
@@ -818,22 +819,35 @@ def extract_tables_with_camelot(pdf_bytes: bytes, page_number: int = None) -> Li
        
     return tables
 
+# Initialize EasyOCR reader once
+reader = easyocr.Reader(['en'], gpu=False)
+
 def ocr_pdf(pdf_bytes: io.BytesIO) -> Tuple[str, List]:
     """
-    Runs OCR on all pages of a PDF and returns extracted text + empty table list.
+    Runs OCR on all pages of a PDF using PyMuPDF + EasyOCR.
+    Returns extracted text + empty table list.
     """
     ocr_text = ""
     tables = []
 
     try:
-        images = convert_from_bytes(pdf_bytes.getvalue())
-        for img in images:
-            text = pytesseract.image_to_string(img)
-            ocr_text += text.strip() + "\n"
+        doc = fitz.open(stream=pdf_bytes.getvalue(), filetype="pdf")
+        for page in doc:
+            pix = page.get_pixmap()
+            img = Image.frombytes("RGB", [pix.width, pix.height], pix.samples)
+
+            # Convert to numpy for EasyOCR
+            img_np = np.array(img)
+
+            # Run OCR
+            results = reader.readtext(img_np, detail=0, paragraph=True)
+            page_text = " ".join(results)
+            ocr_text += page_text.strip() + "\n"
+
     except Exception as e:
         print(f"[ERROR] OCR failed: {e}")
 
-    return ocr_text, tables
+    return ocr_text.strip(), tables
 
 def fetch_text_from_url(pdf_url: str) -> Tuple[str, List, bool]:
     response = requests.get(pdf_url, timeout=15)
@@ -1173,6 +1187,7 @@ if page == "🤖 AI Analysis":
                 except Exception as e:
                     # Catch any remaining unexpected errors outside the core function
                     st.error(f"An unexpected error occurred: {str(e)}")
+
 
 
 

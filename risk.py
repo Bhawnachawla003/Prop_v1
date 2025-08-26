@@ -819,29 +819,22 @@ def extract_tables_with_camelot(pdf_bytes: bytes, page_number: int = None) -> Li
        
     return tables
 
-# Load EasyOCR reader once (not inside the function, avoids reloading on every call)
-reader = easyocr.Reader(['en'], gpu=False)
-
 def ocr_pdf(pdf_bytes: io.BytesIO) -> Tuple[str, List]:
     """
-    OCR for scanned PDFs using EasyOCR (works on Streamlit Cloud).
+    Runs OCR on all pages of a PDF and returns extracted text + empty table list.
     """
     ocr_text = ""
-    tables: List = []
+    tables = []
+
     try:
-        # Convert PDF pages into images
         images = convert_from_bytes(pdf_bytes.getvalue())
         for img in images:
-            img_np = np.array(img)  # convert PIL -> numpy array
-            results = reader.readtext(img_np, detail=0)  # returns list of strings
-            ocr_text += " ".join(results) + "\n"
+            text = pytesseract.image_to_string(img)
+            ocr_text += text.strip() + "\n"
     except Exception as e:
         print(f"[ERROR] OCR failed: {e}")
 
-    return ocr_text.strip(), tables
-
-
-
+    return ocr_text, tables
 
 def fetch_text_from_url(pdf_url: str) -> Tuple[str, List, bool]:
     response = requests.get(pdf_url, timeout=15)
@@ -1181,6 +1174,7 @@ if page == "🤖 AI Analysis":
                 except Exception as e:
                     # Catch any remaining unexpected errors outside the core function
                     st.error(f"An unexpected error occurred: {str(e)}")
+
 
 
 

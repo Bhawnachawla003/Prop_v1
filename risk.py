@@ -825,16 +825,21 @@ def ocr_pdf(pdf_bytes: io.BytesIO) -> Tuple[str, List]:
     tables = []
     try:
         url = "https://api.ocr.space/parse/image"
-        payload = {"apikey": st.secrets("OCR_SPACE_API_KEY"), "language": "eng"}
+        payload = {"apikey": st.secrets["OCR_SPACE_API_KEY"], "language": "eng"}
         files = {"file": ("file.pdf", pdf_bytes.getvalue())}
+
         response = requests.post(url, data=payload, files=files)
         result = response.json()
+
+        print("[DEBUG] OCR API response:", json.dumps(result, indent=2))
+
         if "ParsedResults" in result:
-            ocr_text = result["ParsedResults"][0]["ParsedText"]
+            ocr_text = result["ParsedResults"][0].get("ParsedText", "")
     except Exception as e:
         print(f"[ERROR] OCR failed: {e}")
 
     return ocr_text.strip(), tables
+
 
 
 
@@ -1176,6 +1181,7 @@ if page == "🤖 AI Analysis":
                 except Exception as e:
                     # Catch any remaining unexpected errors outside the core function
                     st.error(f"An unexpected error occurred: {str(e)}")
+
 
 
 

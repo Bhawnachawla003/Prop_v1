@@ -819,87 +819,22 @@ def extract_tables_with_camelot(pdf_bytes: bytes, page_number: int = None) -> Li
        
     return tables
 
-@st.cache_resource
-def load_easyocr_model():
-    # This function will only run once
-    reader = easyocr.Reader(['en'], gpu=False)
-    return reader
-
-reader = load_easyocr_model()
-
-
-def is_text_sufficient(text: str, min_chars: int = 200, alpha_ratio: float = 0.40) -> bool:
-    """
-    Heuristic to decide whether text extracted by pdfplumber is 'good enough'
-    or we should fallback to OCR.
-    """
-    if not text or len(text.strip()) < min_chars:
-        return False
-    total = len(text)
-    alpha = sum(1 for c in text if c.isalpha())
-    # fraction of alphabetic chars
-    if (alpha / total) < alpha_ratio:
-        return False
-    words = text.split()
-    if not words or (sum(len(w) for w in words) / len(words)) < 2.5:
-        return False
-    return True
-
-def preprocess_pil_image_for_ocr(pil_img: Image.Image) -> np.ndarray:
-    """
-    Light-weight preprocessing using PIL:
-    - convert to grayscale
-    - autocontrast
-    - simple binarization using mean as threshold
-    Returns numpy array suitable for EasyOCR.
-    """
-    pil_gray = pil_img.convert("L")
-    pil_gray = ImageOps.autocontrast(pil_gray, cutoff=1)
-    arr = np.array(pil_gray)
-
-    # simple binarization (robust enough for many scanned docs)
-    thr = arr.mean()
-    bin_arr = (arr > thr).astype(np.uint8) * 255
-
-    return bin_arr
-
 def ocr_pdf(pdf_bytes: io.BytesIO) -> Tuple[str, List]:
     """
-    Render pages at higher DPI and run EasyOCR with light preprocessing.
-    Returns extracted text + tables (tables left empty here).
+    Runs OCR on all pages of a PDF and returns extracted text + empty table list.
     """
     ocr_text = ""
     tables = []
 
     try:
-        doc = fitz.open(stream=pdf_bytes.getvalue(), filetype="pdf")
-        zoom = 300 / 72  # render at ~300 DPI
-        mat = fitz.Matrix(zoom, zoom)
-
-        for pageno, page in enumerate(doc, start=1):
-            # render with alpha disabled to avoid 4-channel images
-            pix = page.get_pixmap(matrix=mat, alpha=False)
-
-            # Robust conversion to PIL
-            img = Image.frombytes("RGB", (pix.width, pix.height), pix.samples)
-
-            # Preprocess and run OCR
-            img_for_ocr = preprocess_pil_image_for_ocr(img)
-            # reader is global EasyOCR reader: returns list of strings when detail=0
-            try:
-                results = reader.readtext(img_for_ocr, detail=0, paragraph=True)
-            except Exception as re:
-                logging.error(f"[ERROR] EasyOCR failure on page {pageno}: {re}")
-                results = []
-
-            page_text = " ".join(results).strip()
-            logging.info(f"[OCR] Page {pageno} extracted {len(page_text)} chars; first100: {page_text[:200]!r}")
-            ocr_text += page_text + "\n"
-
+        images = convert_from_bytes(pdf_bytes.getvalue())
+        for img in images:
+            text = pytesseract.image_to_string(img)
+            ocr_text += text.strip() + "\n"
     except Exception as e:
-        logging.error(f"[ERROR] OCR pipeline failed: {e}")
+        print(f"[ERROR] OCR failed: {e}")
 
-    return ocr_text.strip(), tables
+    return ocr_text, tables
 
 
 def fetch_text_from_url(pdf_url: str) -> Tuple[str, List, bool]:
@@ -1249,6 +1184,7 @@ if page == "🤖 AI Analysis":
                 except Exception as e:
                     # Catch any remaining unexpected errors outside the core function
                     st.error(f"An unexpected error occurred: {str(e)}")
+
 
 
 

@@ -4,6 +4,10 @@ import plotly.express as px
 import plotly.graph_objects as go
 from plotly.subplots import make_subplots
 import numpy as np
+from datetime import datetime
+from num2words import num2words
+import platform
+import tempfile
 import requests
 import io
 from docx import Document
@@ -13,26 +17,22 @@ import os
 from dotenv import load_dotenv
 import glob
 import time
-from typing import Dict, Any, Optional, List
+from typing import Dict, Any, Optional, List, Tuple
 import json
 from urllib.parse import urljoin
-import os
 import fitz # PyMuPDF
 import pytesseract
-from PIL import Image
+from PIL import Image, ImageOps
 from langchain_groq import ChatGroq
 from dotenv import load_dotenv
-from typing import Optional, List, Tuple, Dict, Any
 import logging
 from io import BytesIO
-import requests
 import re
-import json
 from pydantic import BaseModel, Field
 import pdfplumber
 import camelot
 from pdf2image import convert_from_bytes
-import io
+
 
 
 # Try optional AI deps (app continues even if missing)
@@ -745,6 +745,8 @@ def display_insights(insights: dict):
 # Load data
 df, latest_csv = load_auction_data()
 
+pytesseract.pytesseract.tesseract_cmd = "/usr/bin/tesseract"
+
 # Configure logging
 logging.basicConfig(
     level=logging.INFO,
@@ -773,11 +775,11 @@ def is_pdf_scanned(pdf_bytes: bytes) -> bool:
         doc = fitz.open(stream=pdf_bytes, filetype="pdf")
         has_images = any(page.get_images(full=True) for page in doc)
        
-        return has_images 
+        return has_images
     except Exception as e:
         print(f"[ERROR] is_pdf_scanned failed: {e}")
-        return False 
-    
+        return False
+   
 def extract_json_from_text(text: str) -> dict:
     """
     Attempts to extract the first valid JSON object from a text string.
@@ -793,80 +795,33 @@ def extract_json_from_text(text: str) -> dict:
     return {}
    
 
-    return clean_assets(all_assets) 
+    return clean_assets(all_assets)
+
 
 def extract_assets_from_text(text: str) -> list:
-    def is_valid_price(value: str) -> bool:
-        """Check if a string is a valid numeric price (not a date, year, or phone number)."""
-        if not re.search(r'\d', value):
-            return False
-        value_clean = value.replace(",", "").strip()
-        # Discard years
-        if value_clean.isdigit() and 1900 <= int(value_clean) <= 2100:
-            return False
-        # Discard very large numbers that look like phone numbers (>10 digits)
-        if value_clean.isdigit() and len(value_clean) > 10:
-            return False
-        # Discard very small numbers 
-        if value_clean.isdigit() and len(value_clean) < 2:
-            return False
-        return True
-
     assets = []
+    reserve_price, emd_amount, incremental_bid = "", "", ""
 
-    # Try to find assets based on common keywords
-    asset_keywords = ["Land & Building", "RESIDENTIAL FLAT", "Plant & Machinery"]
-    descriptions_with_keywords = re.split(f'({"|".join(asset_keywords)})', text, flags=re.IGNORECASE)
-    descriptions_with_keywords = [d.strip() for d in descriptions_with_keywords if d.strip()]
+    for line in text.splitlines():
+        line = line.strip()
+        if line.lower().startswith("reserve price"):
+            reserve_price = line.split(":", 1)[-1].strip()
+        elif line.lower().startswith("emd amount"):
+            emd_amount = line.split(":", 1)[-1].strip()
+        elif line.lower().startswith("incremental bid amount"):
+            incremental_bid = line.split(":", 1)[-1].strip()
 
-    # Merge keyword and description
-    asset_descriptions = []
-    for i in range(0, len(descriptions_with_keywords), 2):
-        if i + 1 < len(descriptions_with_keywords):
-            asset_descriptions.append(descriptions_with_keywords[i] + " " + descriptions_with_keywords[i + 1])
-        else:
-            asset_descriptions.append(descriptions_with_keywords[i])
-
-    # Extract price-like numbers
-    price_pattern = re.compile(r'[\d,]+\.\d{1,2}|[\d,]+')
-    all_prices = price_pattern.findall(text)
-    all_prices = [p.replace(",", "") for p in all_prices if is_valid_price(p)]
-
-    # Take only last 18 values if there are many
-    if len(all_prices) >= 18:
-        relevant_prices = all_prices[-18:]
-    else:
-        relevant_prices = all_prices
-
-    price_index = 0
-    for description in asset_descriptions:
-        current_asset = {
-            "block_name": "",
-            "asset_description": description.strip(),
-            "reserve_price": "",
-            "emd_amount": "",
-            "incremental_bid_amount": ""
-        }
-
-        # Set block name
-        if "Land & Building" in description:
-            current_asset["block_name"] = "Land & Building"
-        elif "RESIDENTIAL FLAT" in description:
-            current_asset["block_name"] = "RESIDENTIAL FLAT"
-        elif "Plant & Machinery" in description:
-            current_asset["block_name"] = "PLANT & MACHINERY"
-
-        # Assign only if next 3 prices are valid
-        if price_index + 3 <= len(relevant_prices):
-            group = relevant_prices[price_index:price_index + 3]
-            if all(is_valid_price(p) for p in group):
-                current_asset["reserve_price"], current_asset["emd_amount"], current_asset["incremental_bid_amount"] = group
-            price_index += 3
-
-        assets.append(current_asset)
-
+    current_asset = {
+        "block_name": "",
+        "asset_description": "",
+        "reserve_price": reserve_price,
+        "emd_amount": emd_amount,
+        "incremental_bid_amount": incremental_bid,
+    }
+    assets.append(current_asset)
     return assets
-   
+
+
 def format_tables_as_markdown(tables: List[List[List[str]]]):
     markdown = ""
     for table in tables:
@@ -913,20 +868,23 @@ def extract_tables_with_camelot(pdf_bytes: bytes, page_number: int = None) -> Li
     return tables
 
 def ocr_pdf(pdf_bytes: io.BytesIO) -> Tuple[str, List]:
+    """
+    Runs OCR on all pages of a PDF and returns extracted text + empty table list.
+    """
     ocr_text = ""
     tables = []
+
     try:
-        url = "https://api.ocr.space/parse/image"
-        payload = {"apikey": st.secrets("OCR_SPACE_API_KEY"), "language": "eng"}
-        files = {"file": ("file.pdf", pdf_bytes.getvalue())}
-        response = requests.post(url, data=payload, files=files)
-        result = response.json()
-        if "ParsedResults" in result:
-            ocr_text = result["ParsedResults"][0]["ParsedText"]
+        images = convert_from_bytes(pdf_bytes.getvalue())
+        for img in images:
+            text = pytesseract.image_to_string(img)
+            ocr_text += text.strip() + "\n"
     except Exception as e:
         print(f"[ERROR] OCR failed: {e}")
 
-    return ocr_text.strip(), tables
+    return ocr_text, tables
+
+
 
 
 
@@ -970,6 +928,9 @@ def fetch_text_from_url(pdf_url: str) -> Tuple[str, List, bool]:
 
     return raw_text.strip(), tables, scanned_pdf
 
+
+
+
 def truncate_text(text: str, max_words: int = 5000) -> str:
     words = text.split()
     return " ".join(words[:max_words]) if len(words) > max_words else text
@@ -997,27 +958,34 @@ def clean_assets(assets: list) -> list:
     for asset in assets:
         cleaned_asset = asset.copy()
 
-        # 1. Clean asset description
+        # Clean asset description
         desc = asset.get("asset_description", "")
-        desc = re.sub(r"http\S+|www\.\S+", "", desc)  # Remove URLs
-        desc = re.sub(r"\S+@\S+", "", desc)  # Remove email addresses
-        desc = re.sub(r"\s+", " ", desc)  # Remove multiple spaces/newlines
+        desc = re.sub(r"http\S+|www\.\S+", "", desc)  
+        desc = re.sub(r"\S+@\S+", "", desc) 
+        desc = re.sub(r"\s+", " ", desc) 
         cleaned_asset["asset_description"] = desc.strip()
 
-        # 2. Clean numeric fields
+        # Clean numeric fields
         for field in ["reserve_price", "emd_amount", "incremental_bid_amount"]:
             value = asset.get(field, "")
-            if value:
-                # Keep only digits, commas, and decimal points
-                value_clean = re.sub(r"[^\d.,]", "", value)
-                value_clean = value_clean.replace(",", "")  # Remove commas for uniformity
-                cleaned_asset[field] = value_clean if value_clean else ""
-            else:
-                cleaned_asset[field] = ""
+            cleaned_asset[field] = value.strip()
 
         cleaned_assets.append(cleaned_asset)
 
     return cleaned_assets
+
+def enforce_numeric_fields(asset: dict) -> dict:
+    """
+    Ensure Reserve Price, EMD, Incremental Bid keep ONLY the numeric Rs. value
+    """
+    for field in ["reserve_price", "emd_amount", "incremental_bid_amount"]:
+        if asset.get(field):
+            match = re.search(r"(Rs\.\s*[\d,]+/-)", asset[field])
+            if match:
+                asset[field] = match.group(1)  
+            else:
+                asset[field] = asset[field].split("(")[0].strip()
+    return asset
 
 class AuctionDetails(BaseModel):
     name_of_corporate_debtor_pdf_: str = Field(..., alias="Name of Corporate Debtor (PDF)")
@@ -1030,12 +998,14 @@ class AuctionDetails(BaseModel):
    
     borrower_name: Optional[str] = None
    
-    class Config:
-        allow_population_by_field_name = True
-        extra = "ignore"  
+    model_config = {
+        "validate_by_name": True,   
+        "extra": "ignore"           
+    }
+   
 def generate_auction_insights(corporate_debtor: str, auction_notice_url: str, llm) -> dict:
     try:
-        
+       
         raw_text, tables, scanned_pdf = fetch_text_from_url(auction_notice_url)
 
         fallback_assets = extract_assets_from_text(raw_text)
@@ -1045,7 +1015,7 @@ def generate_auction_insights(corporate_debtor: str, auction_notice_url: str, ll
         markdown_table = ""
         if use_fallback:
             # Using logging.warning is better practice than print
-            logging.warning("[FALLBACK] Using extracted assets from text due to missing/bad table") 
+            logging.warning("[FALLBACK] Using extracted assets from text due to missing/bad table")
             assets_for_prompt = clean_assets(fallback_assets)
         else:
             markdown_table = format_tables_as_markdown(tables)
@@ -1055,13 +1025,13 @@ def generate_auction_insights(corporate_debtor: str, auction_notice_url: str, ll
 
         truncated_text = truncate_text(raw_text)
 
-        
+       
         assets_section = (
             f"\nAssets (extracted via OCR fallback):\n{json.dumps(assets_for_prompt, indent=2)}"
             if assets_for_prompt else markdown_table
         )
 
-        
+       
         prompt = f"""
 You are an expert financial analyst specializing in Indian auction notices. Your primary role is to audit the listing quality and risk.
 
@@ -1107,10 +1077,13 @@ Assign this risk level if NO High Risk or Average Risk items are found. The Lega
 Please extract the following insights and return them as a structured JSON:
 
 1. Extract all general details (e.g. dates, contacts, platform link, etc.) exactly as written — do not infer or modify them.
-2. Use the provided markdown table or OCR asset JSON (whichever is present) to populate the `"Assets"` list.
+2. Use the provided markdown table or OCR asset JSON (whichever is present) to populate the `"Assets"` list. **This table/JSON is the definitive source for asset details.**
 3. One row = one asset. Do not duplicate or infer missing rows.
-4. If values are missing, leave them blank — do not guess.
-5. Find the exact 'Reserve Price', 'EMD Amount', and 'Incremental Bid Amount' from the provided raw text, paying close attention to their proximity to these keywords. The Assets table should be a final cross-reference.
+4. If values are missing, leave them blank — do not guess. **Crucially, if a value like 'Incremental Bid Amount' is not present in the source text or table, leave its field empty.**
+5. For Reserve Price, EMD Amount, and Incremental Bid Amount:
+- Copy the value EXACTLY as written in the notice (e.g., 'Rs. 90,00,000/-').
+- Preserve the numeric formatting (commas, Rs., /-).
+- DO NOT expand numbers into words (e.g., do not write 'Ninety Lakh' or 'Nine Crore').
 
 Additional Task:
 Rank the Auction using the provided **RISK SCORING FRAMEWORK** and the three components:
@@ -1175,11 +1148,11 @@ Return the result in this **exact JSON format**:
     }}
 }}
 """
-    
+   
         logging.info(f"[INFO] Prompt length: {len(prompt.split())} words")
 
         response = llm.invoke(prompt, max_tokens=2048, temperature=0.2, top_p=0.9)
-        logging.info(f"[INFO] Raw LLM response: {response.content[:500]} ...") 
+        logging.info(f"[INFO] Raw LLM response: {response.content[:500]} ...")
 
         parsed = extract_json_from_text(response.content)
         normalized = normalize_keys(parsed)
@@ -1190,9 +1163,7 @@ Return the result in this **exact JSON format**:
             "insights": normalized
         }
 
-    # FIX: Ensure this 'except' block is aligned exactly with the 'try' block above it.
-    except Exception as e: 
-        # 🔑 DEBUGGING CHANGE: Capture the exact exception message and return it.
+    except Exception as e:
         error_msg = f"An error occurred during insight generation: {str(e)}"
         logging.error(f"[ERROR] generate_auction_insights failed: {error_msg}")
         return {"status": "error", "message": error_msg}
@@ -1204,28 +1175,47 @@ if page == "🤖 AI Analysis":
         st.error("No auction data loaded")
         st.stop()
 
-    # Clean and standardize column names for safety
-    df.columns = df.columns.str.strip().str.lower().str.replace(r"[^\w]+", "_", regex=True)
+    emd_col = 'EMD Submission Date'
+    id_col = 'Auction ID'
+    bank_col = 'Bank' 
+    notice_url_col = 'Notice URL'
 
-    # Use CIN/LLPIN column as Auction ID selector
-    if 'auction_id' not in df.columns:
-        st.error("Column 'Auction ID' (auction_id) not found in the uploaded data.")
+    # Check for the existence of required columns
+    if emd_col not in df.columns or id_col not in df.columns or bank_col not in df.columns or notice_url_col not in df.columns:
+        missing_cols = [col for col in [emd_col, id_col, bank_col, notice_url_col] if col not in df.columns]
+        st.error(f"Required columns not found. Missing: {missing_cols}. Please check your raw data file.")
         st.stop()
 
-    auction_ids = df['auction_id'].dropna().unique()
-    selected_id = st.selectbox("Select Auction ID (from CIN/LLPIN)", options=[""] + list(auction_ids))
+    # Convert the EMD column to datetime objects
+    df[emd_col] = pd.to_datetime(df[emd_col], format='%d-%m-%Y', errors='coerce')
 
+    # Filter for active auctions
+    today = datetime.now().date()
+    df_active = df[
+        (df[emd_col].dt.date >= today) &  # EMD date today or in the future
+        (~df[notice_url_col].str.contains('URL 2_if available', case=False, na=False)) 
+    ].copy() 
+
+    if df_active.empty:
+        st.warning("No active auctions found in the dataset.")
+        st.stop()
+    
+    # Populate the selectbox with the filtered, active data
+    auction_ids = df_active[id_col].dropna().unique()
+    selected_id = st.selectbox("Select Auction ID (from CIN/LLPIN)", options=[""] + list(auction_ids))
+    
     if selected_id:
-        selected_row = df[df['auction_id'] == selected_id]
+        selected_row = df_active[df_active[id_col] == selected_id]
+        
         if selected_row.empty:
-            st.warning("Selected Auction ID not found in the data.")
+            st.warning("Selected Auction ID not found in the filtered active data.")
             st.stop()
 
         auction_data = selected_row.iloc[0].to_dict()
 
-        # Use the actual cleaned column names
-        corporate_debtor = auction_data.get('bank', '')
-        auction_notice_url = auction_data.get('notice_url', '')
+        # Use the variable names to get data from the dictionary
+        corporate_debtor = auction_data.get(bank_col, '')
+        auction_notice_url = auction_data.get(notice_url_col, '')
 
         if not corporate_debtor or not auction_notice_url:
             st.warning("Corporate Debtor name or Auction Notice URL missing for selected Auction ID.")
@@ -1234,8 +1224,6 @@ if page == "🤖 AI Analysis":
         @st.cache_resource
         def initialize_llm():
             groq_api_key = st.secrets["GROQ_API_KEY"]
-            # NOTE: Consider changing model to 'mixtral-8x7b-32768' as it's a common high-quality Groq model
-            # that is often more reliable than the deepseek model.
             return ChatGroq(
                 model="deepseek-r1-distill-llama-70b",
                 temperature=0,
@@ -1246,7 +1234,7 @@ if page == "🤖 AI Analysis":
 
         if st.button("Generate Insights", use_container_width=True):
             if not llm:
-                st.error("LLM failed to initialize. Check your GROQ_API_KEY secret in Streamlit Cloud.")
+                st.error("LLM failed to initialize. Check  GROQ_API_KEY secret in Streamlit Cloud.")
                 st.stop()
 
             with st.spinner("Generating insights (This may take up to 30 seconds for PDF processing and LLM analysis)..."):
@@ -1256,17 +1244,18 @@ if page == "🤖 AI Analysis":
                     if insights_result["status"] == "success":
                         insight_data = insights_result["insights"]
                         if isinstance(insight_data, dict):
-                            # Assuming display_insights is defined earlier and correct
+                            if "assets" in insight_data and isinstance(insight_data["assets"], list):
+                                insight_data["assets"] = [
+                                    enforce_numeric_fields(asset) for asset in insight_data["assets"]
+                                ]
+                                
                             display_insights(insight_data)
                         else:
                             st.markdown(insight_data)
+                            
                     else:
-                        # 🔑 DEBUGGING CHANGE: Display the full error trace from the 'message' field
                         st.error("Analysis Failed")
-                        st.exception(Exception(insights_result["message"]))
+                        st.error(insights_result["message"])
                         
                 except Exception as e:
-                    # Catch any remaining unexpected errors outside the core function
                     st.error(f"An unexpected error occurred: {str(e)}")
-
-

@@ -6,6 +6,7 @@ from plotly.subplots import make_subplots
 import numpy as np
 import requests
 import io
+from datetime import datetime
 from docx import Document
 from PyPDF2 import PdfReader
 import datetime as dt
@@ -1268,5 +1269,6 @@ if page == "🤖 AI Analysis":
                 except Exception as e:
                     # Catch any remaining unexpected errors outside the core function
                     st.error(f"An unexpected error occurred: {str(e)}")
+
 
 

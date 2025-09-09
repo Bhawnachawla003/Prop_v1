@@ -18,6 +18,9 @@ babel
 numpy
 pandas
 pytesseract
+beautifulsoup4
+lxml
+
 
 
 

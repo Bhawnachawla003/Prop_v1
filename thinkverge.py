@@ -586,8 +586,8 @@ elif page == "📊 Basic Analytics" and df is not None:
 df, latest_csv = load_auction_data()
 
 LANDING_API_URL = "https://api.va.landing.ai/v1/tools/agentic-document-analysis"
-GROQ_API_KEY = st.secrets("GROQ_API_KEY")
-VA_API_KEY = st.secrets("VA_API_KEY")
+GROQ_API_KEY = st.secrets["GROQ_API_KEY"]
+VA_API_KEY = st.secrets["VA_API_KEY"]
 
 def display_insights(insights: dict):
     """Display auction insights in Streamlit directly, without expanders."""

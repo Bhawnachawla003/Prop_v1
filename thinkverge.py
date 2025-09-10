@@ -635,7 +635,7 @@ def display_insights(insights: dict):
         st.markdown(f"**Inspection Period:** {timeline.get('inspection_period', '')}")
 
     # Ranking
-    ranking = insights.get("ranking", {})
+    ranking = insights.get("ranking", insights)
     if ranking:
         st.markdown("### Auction Ranking")
         st.markdown(f"**Legal Compliance Score:** {ranking.get('legal_compliance_score', 0)}")
@@ -643,7 +643,7 @@ def display_insights(insights: dict):
         st.markdown(f"**Market Trends Score:** {ranking.get('market_trends_score', 0)}")
         st.markdown(f"**Final Score:** {ranking.get('final_score', 0)}")
         st.markdown(f"**Risk Summary:** {ranking.get('risk_summary', '')}")
-        references = ranking.get("reference_summary", [])
+        references = ranking.get("reference_summary") or insights.get("referance summary")
         if references:
             st.markdown("**Reference Summary:**")
             if isinstance(references, str):
@@ -731,7 +731,7 @@ def regex_preparser(markdown: str, chunks: list) -> dict:
     if debtor_match:
         parsed["corporate_debtor"] = debtor_match.group(1).strip()
 
-    # Auction Date (prioritize "Date of Auction")
+    # Auction Date 
     auction_date_match = re.search(
         r'(?:Date(?: and Time)? of)?\s*(?:E-?)?Auction[:\-\s]*?(\d{1,2}[./]\d{1,2}[./]\d{4}|\d{1,2}(st|nd|rd|th)?\s+\w+\s*,?\s*\d{4})',
         markdown,
@@ -841,13 +841,11 @@ def regex_preparser(markdown: str, chunks: list) -> dict:
                         elif "location" in lower_header:
                             asset_entry["location"] = value_with_unit
                         else:
-                            # Catch-all for other columns
                             asset_entry[lower_header.replace(" ", "_")] = value_with_unit
                             
                     assets.append(asset_entry)
 
             except Exception as e:
-                # Log the exception for debugging
                 print(f"Error parsing table: {e}")
                 continue
 
@@ -856,7 +854,7 @@ def regex_preparser(markdown: str, chunks: list) -> dict:
 
     return parsed
 
-# Risk scoring via Groq LLM
+# Risk scoring via Groq LLM# Risk scoring via Groq LLM
 def generate_risk_insights(auction_json: dict, llm) -> dict:
     import json
 
@@ -897,9 +895,88 @@ Return JSON with:
 * For the financial fields (reserve_price, emd_amount, incremental_bid_amount), **ensure the units (e.g., 'Lacs') are included** along with the numerical value.
 * If incremental_bid_amount is not explicitly mentioned in the notice, return null or leave it blank
 * If EMD amount is not explicitly mentioned in the notice, return null or leave it blank
-- ranking (legal_compliance_score, economical_score, market_trends_score, final_score, risk_summary, reference_summary)
+# RISK SCORING FRAMEWORK (Use this internally for scoring)
+## HIGH RISK (Block/Hold - Score 0-3)
+Assign this risk level if ANY of the following Critical Defects are present. If a High Risk item is found, the Legal Compliance Score MUST be in the 0-3 range.
+- **Statutory Defects:** Notice has legal defects (e.g., notice period shorter than mandated; missing authorized officer name/signature/seal).
+- **Critical Mismatch:** Key details (e.g., property size/reserve price) differ significantly between the official notice PDF and the listing data.
+- **Missing Core Docs:** Critical artifacts are missing (Sale Notice PDF, Valuation Report, Title documents).
+- **Expired Valuation:** The valuation report date is older than 6-12 months (stale valuation).
+- **Extreme Price Outlier:** Reserve price is an extreme outlier (e.g., > +50% or < -40% vs. comparable properties/norms).
+- **Known Litigation:** Known, unresolved litigation (lis pendens, stay order) is disclosed.
+- **Process Integrity:** Frequent re-schedules (>=3) without adequate cause, OR outcome anomalies (postings contradict terms).
+
+## AVERAGE RISK (Warn Users - Score 4-7)
+Assign this risk level if NO High Risk items are present, but ANY of the following Moderate Defects are found. The Legal Compliance Score MUST be in the 4-7 range.
+- **Ambiguity:** Property description is ambiguous or inconsistent across documents.
+- **Missing Minor Annexures:** Minor supporting documents (e.g., uncertified translations) are missing.
+- **Low Quality:** Low photo count (<=3 .photos) or poor readability of scanned documents.
+- **Mild Price Outlier:** Reserve price is a mild outlier (e.g., 10-25% out of band).
+- **Short EMD Window:** Tight gap between notice and EMD close date.
+- **Multiple Re-Auctions:** Listing mentions multiple prior re-auctions with ad-hoc reserve changes (no method cited).
+- **Non-Standard Contact:** Personal emails/phones used in notices instead of official domains.
+
+## LOW / NO RISK (Informational - Score 8-10)
+Assign this risk level if NO High Risk or Average Risk items are found. The Legal Compliance Score MUST be in the 8-10 range.
+- **Minor Typos:** Only minor typos/formatting errors that don't change legal meaning.
+- **Normal Dynamics:** Events like last-minute bidding or re-auction due to reserve not met (1-2 cycles).
+
+Rank the Auction using the provided **RISK SCORING FRAMEWORK** and the three components:
+- Legal Compliance (Score 0-10, based on the Framework)
+- Economical Point of View (Score 0-10, based on asset value and market context)
+- Market Trends (Score 0-10, based on timing and location factors)
+
+Provide:
+- Individual scores for each component (0–10).
+- A final score (simple average of the three components).
+- A single-line summary of risk: "High Risk", "Average Risk", or "Low/No Risk" based on the highest risk category found.
+- A **Reference Summary** that consists of **exactly 8 bullet points** in the JSON array. This summary must be a **detailed, evidence-based audit report** that uses plain, easy-to-understand language. **For every point, you MUST include the specific data/text from the notice that justifies the conclusion, and explicitly state the legal or market standard where applicable.**
+
+1. **Primary Risk & Evidence:** State the assigned risk level and the single most critical issue found. **DO NOT copy text from other points.** (Example: 'AVERAGE RISK: The contact email "anilgoel@aaainsolvency.com" is non-standard.')
+2. **Justification of Primary Risk:** Explain the risk. (Example: This email uses a non-institutional domain, raising a minor integrity concern over accountability.)
+3. **Statutory Compliance Check:** Report on legal defects by **citing the legal standard and the full period**. (Example: Statutory defects were cleared. The 21-day notice period rule is met, as the period from [Notice Date] to [Auction Date] is compliant.)
+4. **Authorization/Evidence Check:** Report on authorization and evidence by citing the document/reference. (Example: Valid authorization evidence is present, citing the NCLT order/Resolution reference from the text, ensuring the sale is legally sound.)
+5. **Artifacts Check:** Report on critical and minor documents. (Example: All critical documents are present. Minor annexures (like uncertified translations) are missing, which is an Average Risk.)
+6. **Valuation Check:** Report on price outlier and valuation currency. (Example: The Reserve Price of [Price] is acceptable based on market norms. The valuation report date of [Valuation Date] is current and not expired, meeting the 6-12 month policy window.)
+7. **Process/Timeline Check:** Report on EMD window/re-auctions. (Example: The EMD window from [Notice Date] to [EMD Date] is adequate. No signs of multiple re-auctions or ad-hoc reserve changes were noted.)
+8. **Listing Quality Warning:** Report on photos/description/ambiguity. (Example: Listing quality is low. Property photos and detailed descriptions require significant improvement for better transparency.)
+
+
+
+OUTPUT INSTRUCTIONS (IMPORTANT):
+Your entire response MUST be a single valid JSON object with this structure:
+
+{{
+  "corporate_debtor": "string",
+  "auction_date": "string",
+  "auction_time": "string or null",
+  "inspection_date": "string or null",
+  "inspection_time": "string or null",
+  "auction_platform": "string",
+  "contact_email": ["list of strings"],
+  "contact_mobile": "string",
+  "assets": [
+    {{
+      "block_name": "string",
+      "asset_description": "string",
+      "reserve_price": "string",
+      "emd_amount": "string or null",
+      "incremental_bid_amount": "string or null"
+    }}
+  ],
+  "ranking": {{
+    "legal_compliance_score": int,
+    "economical_score": int,
+    "market_trends_score": int,
+    "final_score": int,
+    "risk_summary": "string",
+    "reference_summary": ["list of 8 strings"]
+  }}
+}}
+Do not include any text outside of this JSON.
 """
 
+    # Call LLM
     messages = [{"role": "user", "content": prompt}]
     resp = llm.invoke(messages, response_format={"type": "json_object"})
     raw_output = resp.content
@@ -907,13 +984,25 @@ Return JSON with:
     try:
         parsed = json.loads(raw_output)
 
-
+        # Ensure auction_time is present 
         if not pre_parsed.get("auction_time") and "auction_time" not in parsed:
             parsed["auction_time"] = None
-           
+
+        # Enforce defaults for ranking
+        parsed.setdefault("ranking", {})
+        ranking = parsed["ranking"]
+        ranking.setdefault("legal_compliance_score", 0)
+        ranking.setdefault("economical_score", 0)
+        ranking.setdefault("market_trends_score", 0)
+        ranking.setdefault("final_score", 0)
+        ranking.setdefault("risk_summary", "Not available")
+        ranking.setdefault("reference_summary", [])
+
         return parsed
+
     except Exception:
         return {"error": "Invalid JSON", "raw": raw_output}
+
 
 # integrate Landing.ai + Groq
 def generate_auction_insights(corporate_debtor: str, auction_notice_url: str, llm, include_markdown: bool = False) -> dict:
@@ -946,6 +1035,7 @@ def generate_auction_insights(corporate_debtor: str, auction_notice_url: str, ll
     except Exception as e:
         return {"status": "error", "message": str(e)}
 
+# 🤖 AI Analysis Page
 if page == "🤖 AI Analysis":
     st.markdown('<div class="main-header">🤖 AI Analysis</div>', unsafe_allow_html=True)
 
@@ -953,20 +1043,42 @@ if page == "🤖 AI Analysis":
         st.error("No auction data loaded")
         st.stop()
 
-    df.columns = df.columns.str.strip().str.lower().str.replace(r"[^\w]+", "_", regex=True)
+    # Normalize column names
+    df.columns = (
+        df.columns
+        .str.strip()
+        .str.lower()
+        .str.replace(r"[^\w]+", "_", regex=True)
+        .str.strip("_")
+    )
 
-    if 'auction_id' not in df.columns:
-        st.error("Column 'Auction ID' (auction_id) not found in the uploaded data.")
+    # Check for required columns
+    required_columns = ['auction_id', 'emd_submission_date', 'notice_url'] 
+    if not all(col in df.columns for col in required_columns):
+        st.error(f"Required columns not found in the data. Make sure your CSV contains: {', '.join(required_columns)}")
         st.stop()
+    
+    # convert the EMD submission date column to a datetime object
+    df['emd_submission_date_dt'] = pd.to_datetime(df['emd_submission_date'], format='%d-%m-%Y', errors='coerce')
 
+    
+    # Filter out rows with 'URL 2_if available' in the notice_url column
     df_filtered = df[~df['notice_url'].str.contains('URL 2_if available', case=False, na=False)]
+    
+    # Filter to show only today's or future EMD dates
+    df_filtered = df_filtered[df_filtered['emd_submission_date_dt'].notna()]
+    today = datetime.today().date()
+    df_filtered = df_filtered[df_filtered['emd_submission_date_dt'].dt.date >= today]
+    
+    # Use the Filtered DataFrame to populate the selectbox
     auction_ids = df_filtered['auction_id'].dropna().unique()
     selected_id = st.selectbox("Select Auction ID (from CIN/LLPIN)", options=[""] + list(auction_ids))
-
+    
     if selected_id:
-        selected_row = df[df['auction_id'] == selected_id]
+        # Use the Filtered DataFrame to get the selected row
+        selected_row = df_filtered[df_filtered['auction_id'] == selected_id]
         if selected_row.empty:
-            st.warning("Selected Auction ID not found in the data.")
+            st.warning("Selected Auction ID not found in the filtered data.")
             st.stop()
 
         auction_data = selected_row.iloc[0].to_dict()
